@@ -1,4 +1,5 @@
-"""WebSocket broadcast hub: pushes alarms / worker status to all connected browsers."""
+"""WebSocket hub: alarms / worker status to all browsers; live track boxes only to the browsers
+that subscribed to a stream ({"sub": ["ped", ...]} from the client)."""
 import asyncio
 import json
 import logging
@@ -11,6 +12,7 @@ log = logging.getLogger("hub")
 class Hub:
     def __init__(self):
         self.clients: set[WebSocket] = set()
+        self.subs: dict[WebSocket, set[str]] = {}
         self.loop: asyncio.AbstractEventLoop | None = None
 
     async def connect(self, ws: WebSocket):
@@ -19,6 +21,22 @@ class Hub:
 
     def disconnect(self, ws: WebSocket):
         self.clients.discard(ws)
+        self.subs.pop(ws, None)
+
+    def subscribe(self, ws: WebSocket, streams):
+        self.subs[ws] = {str(s) for s in streams}
+
+    def subscribed(self, stream):
+        return any(stream in s for s in self.subs.values())
+
+    async def send_stream(self, stream, kind, data):
+        msg = json.dumps({"type": kind, "data": data}, separators=(",", ":"))
+        for ws, streams in list(self.subs.items()):
+            if stream in streams:
+                try:
+                    await ws.send_text(msg)
+                except Exception:
+                    self.disconnect(ws)
 
     async def broadcast(self, kind, data):
         msg = json.dumps({"type": kind, "data": data}, ensure_ascii=False, default=str)

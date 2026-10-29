@@ -3,6 +3,7 @@
     uvicorn api.main:app --host 0.0.0.0 --port 8090
 """
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 
@@ -16,6 +17,7 @@ from api.hub import hub
 from api.manager import manager
 from api.models import Device
 from api.notify import notifier
+from api import tracks
 from api.routers import alarms, devices, hooks, internal, notify
 from api.zlm import ZLM
 
@@ -81,7 +83,10 @@ async def lifespan(app: FastAPI):
     sup = asyncio.create_task(manager.supervise())
     await sync_with_zlm(app)
     rec = asyncio.create_task(reconcile_loop(app))
+    udp = await tracks.start()
     yield
+    if udp:
+        udp.close()
     rec.cancel()
     sup.cancel()
     manager.shutdown()
@@ -120,7 +125,13 @@ async def ws(websocket: WebSocket):
     await hub.connect(websocket)
     try:
         while True:
-            await websocket.receive_text()   # ignore client messages; keeps connection open
+            # Only client message: {"sub": [streams]} = which live track boxes this page wants
+            try:
+                msg = json.loads(await websocket.receive_text())
+                if isinstance(msg, dict) and isinstance(msg.get("sub"), list):
+                    hub.subscribe(websocket, msg["sub"])
+            except ValueError:
+                pass
     except WebSocketDisconnect:
         hub.disconnect(websocket)
 

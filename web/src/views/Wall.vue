@@ -9,6 +9,9 @@
         </el-radio-group>
         <el-radio-group v-model="source" size="small">
           <el-radio-button value="ai">AI 画面</el-radio-button>
+          <el-tooltip :disabled="mode === 'webrtc'" content="前端画框需要 WebRTC：fMP4 播放有 1–3 秒缓冲，无法和检测结果精确对齐">
+            <el-radio-button value="overlay" :disabled="mode !== 'webrtc'">原始 + 前端画框</el-radio-button>
+          </el-tooltip>
           <el-radio-button value="source">原始画面</el-radio-button>
         </el-radio-group>
         <el-radio-group v-model="mode" size="small">
@@ -21,7 +24,10 @@
       <div class="grid" :style="gridStyle">
         <div v-for="(slot, i) in slots" :key="i" class="cell" :class="{ flash: flashing[slot?.stream] }">
           <template v-if="slot">
-            <Player :key="slot.stream + source + mode" :urls="slot.play[source]" :mode="mode" />
+            <!-- ai: boxes burned in by the worker (re-encoded stream); overlay: raw stream + boxes
+                 drawn here from live track data (sharper picture, boxes glide at display rate) -->
+            <Player :key="slot.stream + source + mode" :urls="slot.play[source === 'ai' ? 'ai' : 'source']" :mode="mode"
+                    :overlay="source === 'overlay' ? { stream: slot.stream, rules: slot.rules } : null" />
             <div class="overlay top">
               <span class="name">
                 <span class="dot" :class="{ on: slot.online }" />{{ slot.name }}
@@ -88,6 +94,9 @@ watch([layout, source, mode, picked], () => {
     localStorage.setItem('wall.picked', JSON.stringify(picked))
   } catch { /* storage unavailable */ }
 }, { deep: true })
+
+// Overlay boxes are aligned via the WebRTC jitter buffer; fMP4 can't be aligned precisely
+watch(mode, m => { if (m !== 'webrtc' && source.value === 'overlay') source.value = 'source' }, { immediate: true })
 
 const byId = computed(() => Object.fromEntries(store.devices.map(d => [d.id, d])))
 const onlineCount = computed(() => store.devices.filter(d => d.online).length)

@@ -5,24 +5,29 @@
 <template>
   <div class="player">
     <video ref="video" muted autoplay playsinline :style="{ objectFit: fit }" @loadedmetadata="onMeta" />
+    <TrackOverlay v-if="overlay" :stream="overlay.stream" :rules="overlay.rules" :video="video" :delay="delay" />
     <div v-if="status !== 'playing'" class="status">{{ statusText }}</div>
   </div>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import TrackOverlay from './TrackOverlay.vue'
 
 const props = defineProps({
   urls: { type: Object, required: true },    // { webrtc, fmp4, ... } from /api/devices play.*
   mode: { type: String, default: 'webrtc' },
   fit: { type: String, default: 'contain' },
+  overlay: { type: Object, default: null },  // { stream, rules }: draw live track boxes over the video
 })
 const emit = defineEmits(['size'])
 const video = ref(null)
 const status = ref('connecting')
 const statusText = computed(() => ({ connecting: '连接中…', retry: '无信号，重试中…' }[status.value] || ''))
 
-let rtc = null, timer = null, chaser = null, watchdog = null, alive = true
+let rtc = null, timer = null, chaser = null, watchdog = null, delayTimer = null, alive = true
+// How far behind live the picture is (s), for aligning overlay boxes with the video
+const delay = ref(0)
 const STALL_MS = 6000
 
 function loadRTCClient() {
@@ -43,6 +48,7 @@ function stop() {
   clearTimeout(timer)
   clearInterval(chaser)
   clearInterval(watchdog)
+  clearInterval(delayTimer)
   if (rtc) { try { rtc.close() } catch { /* ignore */ } rtc = null }
   const v = video.value
   if (v) { v.pause(); v.removeAttribute('src'); v.srcObject = null; v.load() }
@@ -81,6 +87,21 @@ async function start() {
     rtc.on(Z.Events.WEBRTC_ON_CONNECTION_STATE_CHANGE, s => {
       if (s === 'failed' || s === 'disconnected' || s === 'closed') retry()
     })
+    // WebRTC delay ~ the receiver's jitter buffer (average of the last 2 s)
+    let last = null
+    delayTimer = setInterval(async () => {
+      if (!props.overlay || !rtc?.pc) return
+      try {
+        const st = await rtc.pc.getStats()
+        st.forEach(r => {
+          if (r.type !== 'inbound-rtp' || r.kind !== 'video') return
+          if (last && r.jitterBufferEmittedCount > last.n) {
+            delay.value = (r.jitterBufferDelay - last.d) / (r.jitterBufferEmittedCount - last.n)
+          }
+          last = { d: r.jitterBufferDelay, n: r.jitterBufferEmittedCount }
+        })
+      } catch { /* closed */ }
+    }, 2000)
   } else {
     v.onerror = retry
     v.onended = retry

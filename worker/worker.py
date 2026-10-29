@@ -51,7 +51,9 @@ class AnalysisThread(threading.Thread):
         self.sink = sink
         self.interval = 1.0 / det_fps
         self.cond = threading.Condition()
-        self.pending = None             # (frame, t)
+        self.pending = None             # (frame, t, wall time the frame arrived)
+        self.on_tracks = None           # callback(payload) for browser overlays (ApiClient.send_tracks)
+        self.stream = ""
         self.running = True
         self._reset = False
         self._new_rules = None          # set by the API poller thread, applied in run()
@@ -65,7 +67,7 @@ class AnalysisThread(threading.Thread):
 
     def submit(self, frame, t):
         with self.cond:
-            self.pending = (frame, t)
+            self.pending = (frame, t, time.time())
             self.cond.notify()
 
     def reset(self):
@@ -95,7 +97,7 @@ class AnalysisThread(threading.Thread):
                 item, self.pending = self.pending, None
             if item is None:
                 continue
-            frame, t = item
+            frame, t, arrived = item
             if self._new_rules is not None:
                 self.rules_cfg, self._new_rules = self._new_rules, None
                 self.engine = None      # rebuilt below with the new config (counters restart)
@@ -107,11 +109,33 @@ class AnalysisThread(threading.Thread):
                 self.track_views = []
             try:
                 self._process(frame, t)
+                if self.on_tracks:
+                    self.on_tracks(self._tracks_payload(frame.shape, arrived))
             except Exception:
                 log.exception("analysis failed")
             sleep = self.interval - (time.monotonic() - t0)
             if sleep > 0:
                 time.sleep(sleep)
+
+    def _tracks_payload(self, shape, arrived):
+        """Boxes normalized to 0..1 plus Kalman velocity (per second), so a browser can draw them
+        over the raw stream at any size and move them smoothly between detections.
+        tr: [id, class, score, x1, y1, x2, y2, vx, vy, in_alarm]"""
+        h, w = shape[:2]
+        alarm = self.alarm
+        hot = alarm[2] if alarm and time.monotonic() - alarm[0] < BANNER_SEC else ()
+        tracks = []
+        for v in self.track_views:
+            x1, y1, x2, y2 = v.box
+            vx, vy = v.kx[4], v.kx[5]
+            tracks.append([v.id, v.name, round(float(v.score), 2),
+                           round(x1 / w, 4), round(y1 / h, 4), round(x2 / w, 4), round(y2 / h, 4),
+                           round(float(vx) / w, 4), round(float(vy) / h, 4), int(v.id in hot)])
+        # p: seconds from frame arrival to now (decode wait + inference). Measured on this machine,
+        # so the browser can use it without comparing clocks: that frame is on screen about
+        # (receive time - p + the player's own buffering delay).
+        return {"s": self.stream, "a": round(arrived, 3), "p": round(time.time() - arrived, 3),
+                "w": w, "h": h, "tr": tracks}
 
     def _process(self, frame, t):
         if self.engine is None and self.rules_cfg:
@@ -189,7 +213,10 @@ def run_once(args, an):
     container = av.open(args.src, options={"rtsp_transport": "tcp", "timeout": "5000000"}, timeout=10)
     an.reset()
     vstream = container.streams.video[0]
-    vstream.thread_type = "AUTO"
+    # SLICE, not AUTO: frame threading decodes up to <cpu count> frames in parallel, so each frame
+    # comes out ~16 frames late (measured 1.39 s at 10 fps, vs 1.5 ms with slice threading). That
+    # delayed the AI stream, the alarms and the browser overlay boxes by the same 1.4 s.
+    vstream.thread_type = "SLICE"
     fps = float(vstream.average_rate or vstream.guessed_rate or 25)
     fps = fps if 1 <= fps <= 60 else 25
     encoder = None
@@ -274,6 +301,9 @@ def main():
         clips = ClipRecorder(base / "ai-vision-ring" / name, sink.save_clip, args.clip_pre, args.clip_post)
         clips.start()
     an = AnalysisThread(detector, tracker, rules_cfg, sink, args.det_fps, clips)
+    an.stream = name
+    if client:
+        an.on_tracks = client.send_tracks
     an.start()
     if client:
         client.stats_fn = an.stats

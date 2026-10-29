@@ -6,8 +6,6 @@ import pytest
 
 from api.manager import WorkerInfo, WorkerManager
 
-IGNORE_TERM = [sys.executable, "-c",
-               "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"]
 OBEY_TERM = [sys.executable, "-c", "import time; time.sleep(60)"]
 
 
@@ -31,10 +29,18 @@ def m(monkeypatch):
     mgr.shutdown()
 
 
-def test_stop_is_non_blocking_and_kills_after_grace(m):
-    w = WorkerInfo("live", "s1", 1, IGNORE_TERM, state="stopped")
+def test_stop_is_non_blocking_and_kills_after_grace(m, tmp_path):
+    ready = tmp_path / "ready"
+    # The child must have installed SIG_IGN before we send SIGTERM (it was flaky without this:
+    # a SIGTERM during interpreter startup simply killed it)
+    script = [sys.executable, "-c", "import pathlib,signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+              f"pathlib.Path({str(ready)!r}).touch(); time.sleep(60)"]
+    w = WorkerInfo("live", "s1", 1, script, state="stopped")
     m.workers["s1"] = w
     WorkerManager._spawn(m, w)        # real spawn with the SIGTERM-ignoring script
+    deadline = time.monotonic() + 10
+    while not ready.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
     t = time.monotonic()
     m.stop("s1")
     assert time.monotonic() - t < 0.5            # hook handlers must not wait

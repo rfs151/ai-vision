@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import sys
@@ -239,3 +240,25 @@ def test_alarm_is_pushed_with_image_and_rate_limited(client, robots):
     post_alarm(client, "nt1")                                        # intrusion: filtered out
     time.sleep(0.2)
     assert robots == []
+
+
+def test_track_boxes_only_reach_subscribers(client):
+    """UDP datagram from a worker -> WebSocket clients subscribed to that stream."""
+    import asyncio
+    from api import tracks
+    from api.hub import hub
+    with client.websocket_connect("/ws") as a, client.websocket_connect("/ws") as b:
+        a.send_text(json.dumps({"sub": ["tk1"]}))
+        b.send_text(json.dumps({"sub": ["other"]}))
+        time.sleep(0.1)
+        msg = {"s": "tk1", "a": 1.0, "w": 640, "h": 480, "tr": [[3, "person", 0.9, .1, .2, .3, .4, 0, 0, 0]]}
+        asyncio.run_coroutine_threadsafe(_deliver(tracks, msg), hub.loop).result(2)
+        got = json.loads(a.receive_text())
+        assert got == {"type": "tracks", "data": msg}
+        assert hub.subscribed("tk1") and not hub.subscribed("nobody")
+
+
+async def _deliver(tracks, msg):
+    tracks.TracksProtocol().datagram_received(json.dumps(msg).encode(), ("127.0.0.1", 1))
+    tracks.TracksProtocol().datagram_received(b"not json", ("127.0.0.1", 1))
+    await asyncio.sleep(0.05)

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import queue
+import socket
 import threading
 import time
 from dataclasses import asdict
@@ -31,6 +32,11 @@ class ApiClient:
         self.stats_fn = None
         self.poll_sec = poll_sec
         self.heartbeat_sec = heartbeat_sec
+        # Track boxes for browser-side overlays: UDP to the API's port (fire and forget; a lost
+        # datagram is replaced by the next one 1/det_fps later, and a slow API never stalls us)
+        u = httpx.URL(self.base)
+        self._udp_addr = (u.host, u.port or (443 if u.scheme == "https" else 80))
+        self._udp = socket.socket(socket.AF_INET6 if ":" in u.host else socket.AF_INET, socket.SOCK_DGRAM)
 
     # ---- rules ----
     def fetch_rules(self):
@@ -117,6 +123,15 @@ class ApiClient:
             except Exception as e:
                 log.warning("upload clip failed (%s), attempt %d", e, attempt + 1)
                 time.sleep(2 ** attempt)
+
+    # ---- live track boxes ----
+    def send_tracks(self, payload):
+        try:
+            data = json.dumps(payload, separators=(",", ":")).encode()
+            if len(data) < 60000:
+                self._udp.sendto(data, self._udp_addr)
+        except OSError as e:
+            log.debug("send tracks failed: %s", e)
 
     # ---- heartbeat + rules polling ----
     def _status_loop(self, on_rules_changed):
