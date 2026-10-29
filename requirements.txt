@@ -1,0 +1,5 @@
+# Runtime (worker)
+openvino>=2024.0
+numpy
+opencv-python-headless
+av

@@ -1,0 +1,7 @@
+.venv/
+.venv-export/
+__pycache__/
+*.pt
+worker/models/*
+!worker/models/.gitkeep
+data/
