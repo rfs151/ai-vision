@@ -165,6 +165,29 @@ cd web && node e2e/playtest.mjs "$(which google-chrome)" /tmp/shots 40     # 同
 
 > 自己推流给 ZLM、又需要 WebRTC 播放时，建议都加上 `-pkt_size 1200`。
 
+### 第二个原因：关键帧太大，Windows 浏览器里仍然卡
+
+包大小修好后，WSL 里的 Chrome 能正常播放，但 **Windows 上的浏览器**播放 `pedestrians.mp4` 仍然一秒左右就卡住；播放 `yybht.mp4` 却正常。
+
+**定位过程**：
+1. 比较两个文件：`pedestrians.mp4` 的关键帧平均 106KB，`yybht.mp4` 只有 26KB。AI 输出流的关键帧更大，平均 135KB
+2. WebRTC 发送一帧时，所有包是连续一次性发出的，106KB 的关键帧约等于一次连发 90 个 1200 字节的包
+3. 测试 WSL → Windows 方向的 UDP 突发（Windows 先发包、WSL 按来源地址回发，和 WebRTC 的方式一样）：
+
+   | 一次连发的包数 | Windows 接收缓冲 64KB | 4MB |
+   |---|---|---|
+   | 10 / 50 | 不丢 | — |
+   | 100 | 丢 15% | — |
+   | 300 | 丢 28% | 不丢 |
+
+   关键帧一丢包就解码不出来，后面的帧都依赖它，画面就停住了。WSL 里的 Chrome 不经过这一段，所以测不出来
+4. 试过 ZLM 的 `rtc.preferred_tcp=1`：它只是把 TCP 候选地址的优先级稍微调高一点（125 对 120），Chrome 主要按自己的偏好选择，仍然走 UDP，没有效果，已改回
+
+**修复**：用 x264 的码率控制限制关键帧大小：`-crf 23 -maxrate 1200k -bufsize 300k`，关键帧降到约 30KB（约 27 个包）。Worker 的输出编码器和 `scripts/get_sample.sh` 都加上了，测试素材已经重新转码。
+
+> 用 Windows 上的 ffmpeg 推流测试时，原始文件要么换成重新转码后的 `data/samples/pedestrians.mp4`，要么推流时重新编码：
+> `-c:v libx264 -preset veryfast -tune zerolatency -g 20 -bf 0 -crf 23 -maxrate 1200k -bufsize 300k`
+
 同一轮还修复了播放器的几个问题（`Player.vue`）：
 - **切换浏览器标签后卡住**：Chrome 会暂停后台标签页里只有视频、没有音频的媒体（AI 输出流没有音频），切回来时 HTTP 直播流已经落后很多甚至卡住。现在切回标签页时，fMP4 模式会自动重连，直接跳到最新画面
 - **卡顿看门狗**：页面可见、应该在播放，但播放进度 6 秒没动，就自动重连。两种播放模式都适用
