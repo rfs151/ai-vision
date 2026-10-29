@@ -15,6 +15,7 @@ def alarm_out(a: Alarm, stream: str) -> AlarmOut:
     out = AlarmOut.model_validate(a)
     out.stream = stream
     out.snapshot_url = f"/media/{a.snapshot}" if a.snapshot else None
+    out.clip_url = f"/media/{a.clip}" if a.clip else None
     return out
 
 

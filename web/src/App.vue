@@ -13,6 +13,7 @@
           <el-icon><Bell /></el-icon>告警中心
           <el-badge v-if="unread" :value="unread" :max="99" class="badge" />
         </el-menu-item>
+        <el-menu-item index="/settings"><el-icon><Promotion /></el-icon>通知设置</el-menu-item>
       </el-menu>
       <div class="muted foot">{{ store.connected ? '实时连接正常' : '实时连接已断开，重连中…' }}</div>
     </el-aside>
@@ -26,7 +27,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElNotification } from 'element-plus'
-import { Bell, EditPen, Monitor, VideoCamera } from '@element-plus/icons-vue'
+import { Bell, EditPen, Monitor, Promotion, VideoCamera } from '@element-plus/icons-vue'
 import { connectWS, loadDevices, loadRecentAlarms, store } from './store'
 import { ALARM_TYPES } from './api'
 

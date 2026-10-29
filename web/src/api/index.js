@@ -35,10 +35,14 @@ export const api = {
   getRules: id => request('GET', `/api/devices/${id}/rules`),
   putRules: (id, rules) => request('PUT', `/api/devices/${id}/rules`, rules),
   alarms: params => request('GET', `/api/alarms${qs(params)}`),
+  alarm: id => request('GET', `/api/alarms/${id}`),
   alarmStats: hours => request('GET', `/api/alarms/stats${qs({ hours })}`),
   setAlarmStatus: (id, status) => request('PATCH', `/api/alarms/${id}`, { status }),
   workers: () => request('GET', '/api/workers'),
   system: () => request('GET', '/api/system'),
+  getNotify: () => request('GET', '/api/notify'),
+  putNotify: cfg => request('PUT', '/api/notify', cfg),
+  testNotify: () => request('POST', '/api/notify/test'),
 }
 
 export const ALARM_TYPES = {

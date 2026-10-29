@@ -42,8 +42,17 @@ class Alarm(Base):
     box: Mapped[list] = mapped_column(JSON, default=list)
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     snapshot: Mapped[str | None] = mapped_column(String(300))   # path relative to data dir
+    clip: Mapped[str | None] = mapped_column(String(300))       # ±10 s MP4, relative to data dir
     stream_time: Mapped[float] = mapped_column(Float, default=0)  # frame pts (s)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
     status: Mapped[str] = mapped_column(String(20), default="new", index=True)   # new|ack|false
 
     device = relationship("Device", back_populates="alarms")
+
+
+class Setting(Base):
+    """Small key/value store for settings edited in the UI (e.g. "notify")."""
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(50), primary_key=True)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)

@@ -9,5 +9,6 @@ export default createRouter({
     { path: '/devices', component: () => import('./views/Devices.vue'), meta: { title: '设备管理' } },
     { path: '/rules/:id?', component: () => import('./views/Rules.vue'), meta: { title: '规则配置' } },
     { path: '/alarms', component: () => import('./views/Alarms.vue'), meta: { title: '告警中心' } },
+    { path: '/settings', component: () => import('./views/Settings.vue'), meta: { title: '通知设置' } },
   ],
 })

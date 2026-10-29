@@ -163,3 +163,79 @@ def test_manager_restarts_crashed_worker_with_backoff():
     assert w.restarts == 2 and w.next_start - time.time() > 3   # 2^2 = 4 s
     m.stop("crash")
     assert w.state == "stopped"
+
+
+def test_clip_upload_links_all_alarms(client):
+    client.post("/api/devices", json={"name": "c", "stream": "cl1"})
+    ids = [post_alarm(client, "cl1").json()["id"] for _ in range(2)]
+    with client.websocket_connect("/ws") as ws:
+        r = client.post("/api/internal/clips", data={"alarm_ids": json.dumps(ids), "start": "1793280000"},
+                        files={"clip": ("clip.mp4", b"fakemp4", "video/mp4")})
+        assert r.status_code == 201 and r.json()["alarms"] == 2
+        msg = json.loads(ws.receive_text())
+        assert msg["type"] == "alarm_clip" and sorted(msg["data"]["ids"]) == sorted(ids)
+    for i in ids:
+        a = client.get(f"/api/alarms/{i}").json()
+        assert a["clip_url"] == r.json()["clip_url"] and a["clip_url"].startswith("/media/clips/cl1/")
+    assert client.get(r.json()["clip_url"]).content == b"fakemp4"
+    assert client.post("/api/internal/clips", data={"alarm_ids": "[999999]"},
+                       files={"clip": ("c.mp4", b"x", "video/mp4")}).status_code == 404
+
+
+# ---- push (WeCom / DingTalk) ----
+
+@pytest.fixture()
+def robots(monkeypatch):
+    """Fake robot endpoints: records every request, answers like the real ones."""
+    import httpx
+    from api.notify import notifier
+    sent = []
+
+    def handler(req):
+        sent.append((str(req.url), json.loads(req.content)))
+        return httpx.Response(200, json={"errcode": 0, "errmsg": "ok"})
+
+    monkeypatch.setattr(notifier, "http", httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(notifier, "sent", __import__("collections").deque())
+    yield sent
+    notifier.cfg = __import__("api.notify", fromlist=["NotifyConfig"]).NotifyConfig()
+
+
+def test_notify_config_masks_secret_and_validates(client, robots):
+    cfg = {"enabled": True, "wecom_webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=k",
+           "dingtalk_webhook": "https://oapi.dingtalk.com/robot/send?access_token=t", "dingtalk_secret": "SEC"}
+    r = client.put("/api/notify", json=cfg).json()
+    assert r["dingtalk_secret"] == "******"
+    cfg["dingtalk_secret"] = "******"                      # saving again without touching it
+    client.put("/api/notify", json=cfg)
+    from api.notify import notifier
+    assert notifier.cfg.dingtalk_secret == "SEC"
+    assert client.put("/api/notify", json={"wecom_webhook": "ftp://x"}).status_code == 422
+
+    res = client.post("/api/notify/test").json()["result"]
+    assert res == {"wecom": True, "dingtalk": True}
+    urls = [u for u, _ in robots]
+    assert any("timestamp=" in u and "sign=" in u for u in urls if "dingtalk" in u)   # 加签
+
+
+def test_alarm_is_pushed_with_image_and_rate_limited(client, robots):
+    client.post("/api/devices", json={"name": "门口", "stream": "nt1"})
+    client.put("/api/notify", json={"enabled": True, "rate_per_min": 2,
+                                    "wecom_webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=k"})
+    for _ in range(3):
+        post_alarm(client, "nt1")
+    time.sleep(0.3)        # pushes run as background tasks
+    kinds = [b["msgtype"] for _, b in robots]
+    assert kinds == ["markdown", "image", "markdown", "image"]       # third alarm over the limit
+    md = robots[0][1]["markdown"]["content"]
+    assert "区域入侵告警" in md and "门口" in md
+    from api.notify import notifier
+    assert notifier.dropped >= 1
+
+    robots.clear()
+    client.put("/api/notify", json={"enabled": True, "types": ["dwell"],
+                                    "wecom_webhook": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=k"})
+    notifier.sent.clear()
+    post_alarm(client, "nt1")                                        # intrusion: filtered out
+    time.sleep(0.2)
+    assert robots == []

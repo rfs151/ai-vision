@@ -73,6 +73,7 @@ class AlarmOut(BaseModel):
     box: list
     detail: dict
     snapshot_url: str | None = None
+    clip_url: str | None = None
     stream_time: float
     created_at: datetime
     status: str

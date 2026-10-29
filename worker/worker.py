@@ -6,8 +6,10 @@
 Pipeline:
     PyAV decode (main thread, every frame, time t = frame pts)
       ├─> latest frame slot ──> analysis thread (every 1/det_fps s):
-      │       YOLO (OpenVINO) -> ByteTrack -> rules -> alarms (snapshot + jsonl)
-      └─> draw tracks extrapolated to t + zones/lines ──> ffmpeg (x264) ──> RTSP push to ZLM
+      │       YOLO (OpenVINO) -> ByteTrack -> rules -> alarms (snapshot + clip job)
+      └─> draw tracks extrapolated to t + zones/lines ──> ffmpeg (x264) ─┬─> RTSP push to ZLM
+                                                                         └─> 2 s segments in /dev/shm
+                                                    (clip.py joins them into ±10 s alarm clips)
 Analysis runs on the newest frame only, so slow inference never piles up latency.
 """
 import argparse
@@ -25,6 +27,7 @@ import av
 import draw
 from alarm import AlarmSink
 from apiclient import ApiClient
+from clip import ClipRecorder
 from detector import COCO_NAMES, YoloDetector
 from rules import RuleEngine
 from tracker import ByteTracker, views
@@ -38,8 +41,9 @@ BANNER_SEC = 3.0
 class AnalysisThread(threading.Thread):
     """Detect -> track -> rules on the latest frame, at a fixed rate."""
 
-    def __init__(self, detector, tracker, rules_cfg, sink, det_fps):
+    def __init__(self, detector, tracker, rules_cfg, sink, det_fps, clips=None):
         super().__init__(daemon=True)
+        self.clips = clips              # ClipRecorder or None
         self.detector = detector
         self.tracker = tracker
         self.rules_cfg = rules_cfg
@@ -135,13 +139,17 @@ class AnalysisThread(threading.Thread):
             text = " | ".join(f"{e.type} @ {e.rule_name}" + (f" #{e.track_id}" if e.track_id else "")
                               for e in alarms)
             draw.draw_banner(snap, "ALARM: " + text)
+            job = self.clips.request() if self.clips else None   # alarms of one frame share a clip
             for e in alarms:
-                self.sink.emit(e, snap)
+                if job:
+                    job.expect()
+                self.sink.emit(e, snap, job)
             self.alarm = (time.monotonic(), "ALARM: " + text, ids, zones)
 
 
-def start_encoder(dst, w, h, fps):
-    """ffmpeg reads raw BGR frames from stdin, encodes H.264 low-latency, pushes RTSP."""
+def start_encoder(dst, w, h, fps, extra_out=None):
+    """ffmpeg reads raw BGR frames from stdin, encodes H.264 low-latency, pushes RTSP.
+    extra_out: a second ffmpeg tee output (alarm clip segments), same encoded stream, no extra cost."""
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-r", f"{fps}", "-i", "-",
@@ -153,11 +161,14 @@ def start_encoder(dst, w, h, fps):
         # SPS/PPS before every keyframe (x264 writes them only once for RTSP output). Without them
         # a WebRTC player whose decoder restarts mid-stream (Windows Chrome) never decodes again.
         "-bsf:v", "dump_extra=freq=keyframe",
-        # 1200-byte RTP: ZLM forwards RTSP-pushed RTP to WebRTC players unchanged. ffmpeg's default
-        # (1472) + WebRTC header extensions + SRTP exceeds a 1500 MTU; on such paths (e.g. WSL
-        # mirrored networking) every large packet is dropped and WebRTC never decodes a frame.
-        "-f", "rtsp", "-rtsp_transport", "tcp", "-pkt_size", "1200", dst,
     ]
+    # 1200-byte RTP: ZLM forwards RTSP-pushed RTP to WebRTC players unchanged. ffmpeg's default
+    # (1472) + WebRTC header extensions + SRTP exceeds a 1500 MTU; on such paths (e.g. WSL
+    # mirrored networking) every large packet is dropped and WebRTC never decodes a frame.
+    if extra_out:
+        cmd += ["-map", "0:v", "-f", "tee", f"[f=rtsp:rtsp_transport=tcp:pkt_size=1200]{dst}|{extra_out}"]
+    else:
+        cmd += ["-f", "rtsp", "-rtsp_transport", "tcp", "-pkt_size", "1200", dst]
     log.info("encoder: %s", " ".join(cmd))
     return subprocess.Popen(cmd, stdin=subprocess.PIPE)
 
@@ -193,7 +204,7 @@ def run_once(args, an):
             if encoder is None:
                 h, w = img.shape[:2]
                 log.info("source %dx%d @ %.2f fps", w, h, fps)
-                encoder = start_encoder(args.dst, w, h, fps)
+                encoder = start_encoder(args.dst, w, h, fps, an.clips.tee_output() if an.clips else None)
                 an.connected, an.resolution = True, f"{w}x{h}"
             an.submit(img.copy(), t)
             frames += 1
@@ -233,6 +244,9 @@ def main():
     ap.add_argument("--rules", help="rules JSON file (zones / lines); ignored with --api")
     ap.add_argument("--api", help="control service URL: rules from API (hot reload), alarms + heartbeat to API")
     ap.add_argument("--out", default=str(ROOT / "data" / "alarms"), help="alarm output dir (without --api)")
+    ap.add_argument("--clip-pre", type=float, default=10, help="alarm clip: seconds before the alarm")
+    ap.add_argument("--clip-post", type=float, default=10, help="alarm clip: seconds after the alarm")
+    ap.add_argument("--no-clips", action="store_true", help="no alarm clips (no segment ring)")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)   # one line per heartbeat is noise
@@ -253,7 +267,13 @@ def main():
     else:
         rules_cfg = json.loads(Path(args.rules).read_text(encoding="utf-8")) if args.rules else None
         sink = AlarmSink(name, args.out)
-    an = AnalysisThread(detector, tracker, rules_cfg, sink, args.det_fps)
+    clips = None
+    if not args.no_clips:
+        # Segment ring in RAM (/dev/shm): ~150 KB/s per stream would otherwise hit the disk all the time
+        base = Path("/dev/shm") if Path("/dev/shm").is_dir() else ROOT / "data"
+        clips = ClipRecorder(base / "ai-vision-ring" / name, sink.save_clip, args.clip_pre, args.clip_post)
+        clips.start()
+    an = AnalysisThread(detector, tracker, rules_cfg, sink, args.det_fps, clips)
     an.start()
     if client:
         client.stats_fn = an.stats

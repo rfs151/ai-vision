@@ -32,12 +32,18 @@
       <el-switch v-model="live" active-text="实时追加" style="margin-left: 8px" />
     </div>
 
-    <el-table :data="items" v-loading="loading" border @row-dblclick="r => (detail = r)">
+    <el-table :data="items" v-loading="loading" border @row-dblclick="r => open(r)">
       <el-table-column prop="id" label="ID" width="70" />
       <el-table-column label="截图" width="130">
         <template #default="{ row }">
           <el-image v-if="row.snapshot_url" :src="row.snapshot_url" fit="cover" class="thumb"
                     :preview-src-list="[row.snapshot_url]" preview-teleported />
+        </template>
+      </el-table-column>
+      <el-table-column label="录像" width="70" align="center">
+        <template #default="{ row }">
+          <el-button v-if="row.clip_url" link type="primary" :icon="VideoPlay" @click="open(row, 'clip')" />
+          <span v-else class="muted">-</span>
         </template>
       </el-table-column>
       <el-table-column label="类型" width="110">
@@ -62,7 +68,7 @@
       </el-table-column>
       <el-table-column label="操作" width="200" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" @click="detail = row">详情</el-button>
+          <el-button size="small" @click="open(row)">详情</el-button>
           <el-button v-if="row.status === 'new'" size="small" type="success" @click="setStatus(row, 'ack')">确认</el-button>
           <el-button v-if="row.status === 'new'" size="small" type="info" @click="setStatus(row, 'false')">误报</el-button>
         </template>
@@ -73,12 +79,14 @@
                    layout="total, sizes, prev, pager, next" style="margin-top: 12px; justify-content: flex-end"
                    @current-change="fetch" @size-change="fetch" />
 
-    <AlarmDialog v-model="detail" @changed="onChanged" />
+    <AlarmDialog v-model="detail" :start-tab="detailTab" @changed="onChanged" />
   </div>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
+import { VideoPlay } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import AlarmDialog from '../components/AlarmDialog.vue'
 import { ALARM_STATUS, ALARM_TYPES, api, fmtTime } from '../api'
@@ -134,8 +142,16 @@ function onChanged(a) {
   loadStats()
 }
 
-// New alarms: prepend when looking at the unfiltered first page
+const detailTab = ref('snap')
+function open(row, tab = 'snap') { detailTab.value = tab; detail.value = row }
+
+// New alarms: prepend when looking at the unfiltered first page. Clips arrive ~13 s later.
 const off = onEvent((type, data) => {
+  if (type === 'alarm_clip') {
+    for (const a of items.value) if (data.ids.includes(a.id)) a.clip_url = data.clip_url
+    if (detail.value && data.ids.includes(detail.value.id)) detail.value = { ...detail.value, clip_url: data.clip_url }
+    return
+  }
   if (type !== 'alarm') return
   loadStats()
   if (live.value && page.value === 1 && !filtered()) {
@@ -145,6 +161,10 @@ const off = onEvent((type, data) => {
   }
 })
 onBeforeUnmount(off)
+
+// Links from pushed messages: #/alarms?id=123 opens that alarm
+const route = useRoute()
+if (route.query.id) api.alarm(route.query.id).then(a => { detail.value = a }).catch(() => {})
 
 fetch()
 loadStats()

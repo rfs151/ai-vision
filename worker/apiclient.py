@@ -55,12 +55,12 @@ class ApiClient:
                 delay = min(delay * 2, 30)
 
     # ---- alarms ----
-    def emit(self, event, frame):
+    def emit(self, event, frame, clip=None):
         """Same interface as alarm.AlarmSink. Non-alarm events (line counts) go via heartbeat stats."""
         if event.alarm:
-            self.send_alarm(event, frame)
+            self.send_alarm(event, frame, clip)
 
-    def send_alarm(self, event, frame):
+    def send_alarm(self, event, frame, clip=None):
         """Non-blocking: JPEG-encode now (frame may be reused), upload in background."""
         rec = asdict(event)
         rec["stream"] = self.stream
@@ -69,25 +69,54 @@ class ApiClient:
             ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
             jpg = buf.tobytes() if ok else None
         try:
-            self._q.put_nowait((rec, jpg))
+            self._q.put_nowait((rec, jpg, clip))
         except queue.Full:
             log.error("alarm queue full, dropping %s", rec["type"])
+            if clip:
+                clip.give_up()
 
     def _upload_loop(self):
         while True:
-            rec, jpg = self._q.get()
+            rec, jpg, clip = self._q.get()
             files = {"snapshot": ("snap.jpg", jpg, "image/jpeg")} if jpg else None
+            alarm_id = None
             for attempt in range(5):
                 try:
                     r = self.http.post(f"{self.base}/api/internal/alarms",
                                        data={"event": json.dumps(rec, ensure_ascii=False)}, files=files)
                     r.raise_for_status()
+                    alarm_id = r.json().get("id")
                     log.warning("ALARM %s rule=%s track=%s -> id %s", rec["type"], rec["rule_name"],
-                                rec["track_id"], r.json().get("id"))
+                                rec["track_id"], alarm_id)
                     break
                 except Exception as e:
                     log.warning("upload alarm failed (%s), attempt %d", e, attempt + 1)
                     time.sleep(2 ** attempt)
+            if clip:
+                if alarm_id:
+                    clip.add_id(alarm_id)
+                else:
+                    clip.give_up()
+
+    def save_clip(self, job, mp4):
+        """ClipRecorder callback (its thread): upload the clip once the alarm ids are known."""
+        ids = job.wait_ids(timeout=60)
+        if not ids:
+            log.warning("clip dropped: no alarm id")
+            return
+        for attempt in range(3):
+            try:
+                with open(mp4, "rb") as f:
+                    r = self.http.post(f"{self.base}/api/internal/clips", timeout=30,
+                                       data={"alarm_ids": json.dumps(ids), "start": f"{job.start:.3f}",
+                                             "end": f"{job.end:.3f}"},
+                                       files={"clip": ("clip.mp4", f, "video/mp4")})
+                r.raise_for_status()
+                log.info("clip uploaded for alarms %s", ids)
+                return
+            except Exception as e:
+                log.warning("upload clip failed (%s), attempt %d", e, attempt + 1)
+                time.sleep(2 ** attempt)
 
     # ---- heartbeat + rules polling ----
     def _status_loop(self, on_rules_changed):

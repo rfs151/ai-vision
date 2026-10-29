@@ -11,11 +11,12 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
 from api.config import ROOT, settings
-from api.db import Base, SessionLocal, engine
+from api.db import SessionLocal, migrate
 from api.hub import hub
 from api.manager import manager
 from api.models import Device
-from api.routers import alarms, devices, hooks, internal
+from api.notify import notifier
+from api.routers import alarms, devices, hooks, internal, notify
 from api.zlm import ZLM
 
 log = logging.getLogger("main")
@@ -71,7 +72,8 @@ async def lifespan(app: FastAPI):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     # httpx logs every request URL at INFO; ZLM's secret is a query parameter -> keep it out of logs
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    Base.metadata.create_all(engine)
+    migrate()
+    notify.load()
     hub.loop = asyncio.get_running_loop()
     app.state.zlm = ZLM()
     if not settings.zlm_secret:
@@ -84,13 +86,15 @@ async def lifespan(app: FastAPI):
     sup.cancel()
     manager.shutdown()
     await app.state.zlm.close()
+    await notifier.close()
 
 
-app = FastAPI(title="ai-vision", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="ai-vision", version="0.5.0", lifespan=lifespan)
 app.include_router(devices.router)
 app.include_router(alarms.router)
 app.include_router(hooks.router)
 app.include_router(internal.router)
+app.include_router(notify.router)
 app.mount("/media", StaticFiles(directory=settings.data_dir), name="media")
 
 

@@ -39,6 +39,8 @@ export function connectWS() {
       store.recentAlarms.unshift(data)
       store.recentAlarms.splice(50)
       store.lastAlarm = { alarm: data, at: Date.now() }
+    } else if (type === 'alarm_clip') {
+      for (const a of store.recentAlarms) if (data.ids.includes(a.id)) a.clip_url = data.clip_url
     } else if (type === 'worker' && data) {
       store.workers[data.stream] = data
     } else if (type === 'stream' || type === 'rules' || type === 'device') {

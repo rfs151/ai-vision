@@ -12,6 +12,7 @@ from api.config import settings
 from api.db import get_db
 from api.hub import hub
 from api.manager import manager
+from api.notify import notifier
 from api.models import Alarm, Device
 from api.routers.alarms import alarm_out
 
@@ -73,4 +74,26 @@ async def ingest_alarm(event: str = Form(...), snapshot: UploadFile | None = Fil
     db.commit()
     out = alarm_out(a, dev.stream)
     hub.publish("alarm", out.model_dump(mode="json"))
+    notifier.alarm(out, dev.name, settings.data_dir / rel if rel else None)
     return {"id": a.id}
+
+
+@router.post("/clips", status_code=201)
+async def ingest_clip(alarm_ids: str = Form(...), start: float = Form(0), clip: UploadFile = File(...),
+                      db: Session = Depends(get_db)):
+    """One MP4 shared by the alarms close together in time (worker merges them)."""
+    ids = [int(i) for i in json.loads(alarm_ids)]
+    alarms = list(db.scalars(select(Alarm).where(Alarm.id.in_(ids))))
+    if not alarms:
+        raise HTTPException(404, "alarms not found")
+    dev = db.get(Device, alarms[0].device_id)
+    t = time.localtime(start or time.time())
+    rel = f"clips/{dev.stream}/{time.strftime('%Y%m%d', t)}/{time.strftime('%H%M%S', t)}_{min(ids)}.mp4"
+    path = settings.data_dir / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(await clip.read())
+    for a in alarms:
+        a.clip = rel
+    db.commit()
+    hub.publish("alarm_clip", {"ids": [a.id for a in alarms], "clip_url": f"/media/{rel}"})
+    return {"clip_url": f"/media/{rel}", "alarms": len(alarms)}
