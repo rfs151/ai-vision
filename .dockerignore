@@ -1,0 +1,10 @@
+.git
+.venv
+.venv-export
+data
+web/node_modules
+web/dist
+**/__pycache__
+*.pt
+web/e2e
+tests

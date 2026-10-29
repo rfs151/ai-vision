@@ -5,6 +5,8 @@
 #   scripts/streams.sh stop  [name...]
 #   scripts/streams.sh restart [name...]
 #   scripts/streams.sh status
+#   scripts/streams.sh run [name...]      start, then stay in the foreground; Ctrl+C / SIGTERM stops
+#                                         them all (for containers: docker compose --profile demo)
 #
 # Every stream runs in its own process group with a retry loop (ZLM restart -> push again in 2 s).
 # PID files: data/run/push_<name>.pid   logs: data/logs/push_<name>.log
@@ -43,7 +45,7 @@ start_one() {
       sleep 2
     done' _ "$file" "$name" >> "$LOGS/push_$name.log" 2>&1 < /dev/null &
   echo $! > "$RUN/push_$name.pid"
-  echo "  $name: started (pid $!)  rtsp://127.0.0.1/live/$name  <- $file"
+  echo "  $name: started (pid $!)  ${ZLM_RTSP:-rtsp://127.0.0.1}/live/$name  <- $file"
 }
 
 stop_one() {
@@ -62,10 +64,15 @@ case $cmd in
   start)   entries "$@" | while read -r n f; do start_one "$n" "$f"; done ;;
   stop)    entries "$@" | while read -r n f; do stop_one "$n"; done ;;
   restart) entries "$@" | while read -r n f; do stop_one "$n"; start_one "$n" "$f"; done ;;
+  run)
+    names=("$@")
+    entries "${names[@]}" | while read -r n f; do start_one "$n" "$f"; done
+    trap 'entries "${names[@]}" | while read -r n f; do stop_one "$n"; done; exit 0' TERM INT
+    while true; do sleep 5 & wait $!; done ;;
   status)
     printf "  %-8s %-8s %s\n" NAME PID FILE
     entries | while read -r n f; do
       printf "  %-8s %-8s %s\n" "$n" "$(pid_of "$n" | grep . || echo -)" "$f"
     done ;;
-  *) sed -n '2,10p' "$0"; exit 1 ;;
+  *) sed -n '2,12p' "$0"; exit 1 ;;
 esac

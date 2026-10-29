@@ -204,6 +204,61 @@ Worker 输出编码（x264，只编码一次）
 
 新增了 `alarms.clip` 字段和 `settings` 表。启动时 `api/db.py` 的 `migrate()` 会自动补上缺少的字段，旧数据库不用删。正式项目应该用 Alembic，这里为了一条命令就能跑起来，做了简化。
 
+## Docker 部署（M6）
+
+服务器上只需要装 Docker（含 compose 插件）。Node、Python、ffmpeg、OpenVINO 都在镜像里：
+
+```bash
+git clone <仓库地址> ai-vision && cd ai-vision
+cp .env.example .env
+vi .env                                    # 至少设置 ZLM_SECRET（openssl rand -hex 16）
+docker compose up -d --build               # 首次构建约 5–10 分钟
+docker compose --profile demo up -d        # 可选：下载 6 段测试视频并循环推流
+# 浏览器打开 http://<服务器IP>:8090
+```
+
+| 服务 | 镜像 | 说明 |
+|---|---|---|
+| zlm | ZLMediaKit 官方镜像 | `deploy/zlm-start.sh` 基于镜像自带的配置，按 `.env` 改写密钥、端口、公网 IP、Hook 地址和 HLS 按需生成 |
+| app | 本项目 `Dockerfile` 构建 | API、网页、Worker（由 API 按需启动）、ffmpeg。数据在 `./data` |
+| demo | 同 app 镜像 | `--profile demo` 时才启动：`get_samples.sh` 下载素材，`streams.sh run` 循环推流 |
+
+- **网络**：全部用 `network_mode: host`。WebRTC 走 UDP，并且要把服务器 IP 告诉浏览器，host 网络在单台服务器上最简单、也不会出错。
+- **防火墙**：放行 8090、80（TCP）和 8000（TCP + UDP）。只有外部摄像头要推流进来时，才需要开 554 和 1935。
+- **公网 IP**：ZLM 的 `externIP` 由 `.env` 里的 `PUBLIC_IP` 设置。服务器网卡上直接是公网 IP 时（例如 Vultr）可以留空；云厂商用内网 IP 加 NAT 时必须填。
+- **`/dev/shm`**：告警录像的环形缓冲放在这里，每路约 10MB。Docker 默认只给 64MB，所以设置了 `shm_size: 1gb`。
+- **模型**：本机构建时，直接使用 `worker/models/` 里已经导出好的 OpenVINO 模型。从 Git 拉代码构建时没有这个模型，镜像的第二阶段会下载 `yolo11n.pt` 并导出。torch 只在这个构建阶段使用，不进最终镜像。
+- **国内构建**：`.env.example` 里列出了镜像站和软件源（Docker 镜像、PyPI、npm、Debian、torch、模型下载地址），把注释打开即可。
+
+## 前端叠加画框（M6）
+
+监控大屏的画面有三种：
+
+| 选项 | 画面 | 框 |
+|---|---|---|
+| AI 画面 | Worker 画好框后重新编码的 `ai/<stream>` | 画在视频里，每秒随检测更新 5 次 |
+| **原始 + 前端画框** | 原始流 `live/<stream>`，不经过重新编码 | 浏览器用 canvas 画，按卡尔曼速度外推，随屏幕刷新率平滑移动 |
+| 原始画面 | 原始流 | 无 |
+
+```
+Worker 每次检测后 ──UDP──> API（与 HTTP 同端口号，默认只监听 127.0.0.1）──WebSocket──> 订阅了这一路的页面
+  {"s":"ped","p":0.06,"w":768,"h":576,"tr":[[id, 类别, 置信度, x1, y1, x2, y2, vx, vy, 是否告警], ...]}
+```
+
+- **坐标**：归一化到 0–1，和页面上画面显示多大无关。速度单位是"每秒移动多少个画面宽高"。
+- **只发给需要的页面**：页面发送 `{"sub": ["ped"]}` 订阅，只有正在显示这一路时才会收到数据。数据不入库。
+- **时间对齐**：`p` 是 Worker 从收到这一帧到发出结果所用的时间，在服务器上测量，所以不需要比较浏览器和服务器的时钟。浏览器按"收到时间 − p + WebRTC 抖动缓冲延迟"推算这一帧什么时候显示，然后按速度外推到当前时刻。实测 WebRTC 从收到一帧到显示只有约 5 ms，所以框能对准。
+- **只支持 WebRTC**：HTTP-fMP4 在浏览器里有 1–3 秒的缓冲，页面拿不到精确数值。ZLM 的 `createStamp` 只精确到秒，和 `aliveSecond` 还相差 17 秒，也没法用来对齐。所以 fMP4 模式下这个选项是灰的。
+
+**排查中发现的问题：解码延迟 1.4 秒**。刚做出来时框总是跟在人后面。用 `requestVideoFrameCallback` 量了一下，浏览器这边从收到到显示只有 5 ms，问题出在 Worker：PyAV 的 `thread_type="AUTO"` 会启用帧级多线程，FFmpeg 会同时解码最多"CPU 线程数"那么多帧，每一帧都要晚出来十几帧：
+
+| 解码线程模式 | 从收到数据包到解出画面 |
+|---|---|
+| AUTO（帧级多线程，16 线程） | 1388 ms |
+| SLICE（片级多线程，现在的设置） | 1.5 ms |
+
+这 1.4 秒原来也一直加在 AI 画面和告警时间上，改成 SLICE 后一起消除了。
+
 ## 排查记录：WebRTC 播放半秒后卡住
 
 **现象**：WebRTC 只显示第一帧画面就卡住；fMP4 和 RTSP 播放都正常。同一个文件用 Windows 上的 ffmpeg 推流正常，用 WSL 里的 ffmpeg 6.1 推流就会卡。
@@ -297,6 +352,15 @@ AI 输出流也一样：ffmpeg 推 RTSP 时，x264 只在开头写一次 SPS/PPS
 | 4 | 31.9 ms | 58% |
 
 默认配置下线程会分散到所有大小核上，还会空转等待，延迟几乎没变，CPU 却多用了 3 倍多。一台机器要跑多路视频时，每路只分少量线程，总吞吐量更高。
+
+### 压测脚本
+
+```bash
+python3 scripts/bench.py -s 30                      # 系统运行中，采样 30 秒
+python3 scripts/bench.py --api http://127.0.0.1:18090
+```
+
+输出每个进程的 CPU、内存和磁盘写入，每一路的推理耗时、帧率和是否跟得上（每秒检测 5 次时单次要小于 200 ms），最后估算这台机器能跑多少路。先用目标路数跑一遍再看结果：机器越满，睿频越低，超线程之间互相争用，每路的开销会变大。
 
 ### 多路压测：6 路同时运行
 

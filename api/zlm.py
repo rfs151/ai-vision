@@ -56,10 +56,13 @@ class ZLM:
 
 
 def play_urls(app, stream, host="127.0.0.1"):
+    hp, rp = settings.play_http_port, settings.play_rtsp_port
+    http = f"http://{host}" + (f":{hp}" if hp != 80 else "")
+    rtsp = f"rtsp://{host}" + (f":{rp}" if rp != 554 else "")
     return {
-        "webrtc": f"http://{host}/index/api/webrtc?app={app}&stream={stream}&type=play",
-        "fmp4": f"http://{host}/{app}/{stream}.live.mp4",
-        "flv": f"http://{host}/{app}/{stream}.live.flv",
-        "hls": f"http://{host}/{app}/{stream}/hls.m3u8",
-        "rtsp": f"rtsp://{host}/{app}/{stream}",
+        "webrtc": f"{http}/index/api/webrtc?app={app}&stream={stream}&type=play",
+        "fmp4": f"{http}/{app}/{stream}.live.mp4",
+        "flv": f"{http}/{app}/{stream}.live.flv",
+        "hls": f"{http}/{app}/{stream}/hls.m3u8",
+        "rtsp": f"{rtsp}/{app}/{stream}",
     }

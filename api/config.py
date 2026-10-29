@@ -29,6 +29,9 @@ class Settings:
     zlm_api = os.getenv("ZLM_API", "http://127.0.0.1")           # ZLM http api
     zlm_rtsp = os.getenv("ZLM_RTSP", "rtsp://127.0.0.1")         # where workers pull/push
     zlm_secret = _zlm_secret()
+    # Ports in the play URLs handed to browsers (ZLM's public http / rtsp ports)
+    play_http_port = int(os.getenv("PLAY_HTTP_PORT", "80"))
+    play_rtsp_port = int(os.getenv("PLAY_RTSP_PORT", "554"))
     # Streams published to these apps get a device record + AI worker automatically
     auto_apps = set(filter(None, os.getenv("AUTO_APPS", "live").split(",")))
     ai_app = os.getenv("AI_APP", "ai")                            # workers push annotated output here
