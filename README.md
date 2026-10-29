@@ -165,28 +165,30 @@ cd web && node e2e/playtest.mjs "$(which google-chrome)" /tmp/shots 40     # 同
 
 > 自己推流给 ZLM、又需要 WebRTC 播放时，建议都加上 `-pkt_size 1200`。
 
-### 第二个原因：关键帧太大，Windows 浏览器里仍然卡
+### 第二个原因：关键帧前没有 SPS/PPS，Windows 浏览器里仍然卡
 
 包大小修好后，WSL 里的 Chrome 能正常播放，但 **Windows 上的浏览器**播放 `pedestrians.mp4` 仍然一秒左右就卡住；播放 `yybht.mp4` 却正常。
 
-**定位过程**：
-1. 比较两个文件：`pedestrians.mp4` 的关键帧平均 106KB，`yybht.mp4` 只有 26KB。AI 输出流的关键帧更大，平均 135KB
-2. WebRTC 发送一帧时，所有包是连续一次性发出的，106KB 的关键帧约等于一次连发 90 个 1200 字节的包
-3. 测试 WSL → Windows 方向的 UDP 突发（Windows 先发包、WSL 按来源地址回发，和 WebRTC 的方式一样）：
+**走过的弯路**：一开始怀疑关键帧太大（`pedestrians.mp4` 106KB，`yybht.mp4` 26KB）：WebRTC 一帧的包是连着发的，实测 WSL → Windows 方向一次连发 100 个包会丢 15%。于是加了 `-maxrate 1200k -bufsize 300k` 限制关键帧到约 30KB，但**还是卡**。这个限制保留了下来，因为它确实能减小突发。还试过 ZLM 的 `rtc.preferred_tcp=1`，它只是把 TCP 候选地址的优先级稍微调高，Chrome 仍走 UDP，没有效果，已改回。
 
-   | 一次连发的包数 | Windows 接收缓冲 64KB | 4MB |
-   |---|---|---|
-   | 10 / 50 | 不丢 | — |
-   | 100 | 丢 15% | — |
-   | 300 | 丢 28% | 不丢 |
+**定位**：Windows Chrome 导出的 `chrome://webrtc-internals` 数据：
+- `packetsLost=0`：网络没有丢包（有一次连接走的是 TCP，也一样卡）
+- `framesReceived` 一直在涨，`framesDecoded` 停在 **20**（正好是第一个 GOP，`-g 20`），`keyFramesDecoded=1`
+- `pliCount` 持续上涨：浏览器一直在要关键帧
+- 解码器：`FFmpeg (fallback from: ExternalDecoder (D3D11VideoDecoder))`：硬件解码器失败后换成了软件解码器
 
-   关键帧一丢包就解码不出来，后面的帧都依赖它，画面就停住了。WSL 里的 Chrome 不经过这一段，所以测不出来
-4. 试过 ZLM 的 `rtc.preferred_tcp=1`：它只是把 TCP 候选地址的优先级稍微调高一点（125 对 120），Chrome 主要按自己的偏好选择，仍然走 UDP，没有效果，已改回
+再看两个文件每个关键帧里的 NAL 单元：
+- `yybht.mp4`：`SPS PPS SEI IDR`，每个关键帧都自带参数集
+- `pedestrians.mp4`：只有 `IDR`，SPS/PPS 只存在 MP4 文件头里
 
-**修复**：用 x264 的码率控制限制关键帧大小：`-crf 23 -maxrate 1200k -bufsize 300k`，关键帧降到约 30KB（约 27 个包）。Worker 的输出编码器和 `scripts/get_sample.sh` 都加上了，测试素材已经重新转码。
+AI 输出流也一样：ffmpeg 推 RTSP 时，x264 只在开头写一次 SPS/PPS。播放器换了解码器之后，没有 SPS/PPS 就解不出任何关键帧，只能不停地发 PLI 要关键帧。
 
-> 用 Windows 上的 ffmpeg 推流测试时，原始文件要么换成重新转码后的 `data/samples/pedestrians.mp4`，要么推流时重新编码：
-> `-c:v libx264 -preset veryfast -tune zerolatency -g 20 -bf 0 -crf 23 -maxrate 1200k -bufsize 300k`
+**修复**：每个关键帧前都带上 SPS/PPS：
+- 推流（MP4 源、`-c:v copy`）：`-bsf:v h264_mp4toannexb`（`scripts/push_sample.sh`）
+- Worker 输出（x264）：`-bsf:v dump_extra=freq=keyframe`
+- 注意：MP4 源不能用 `dump_extra`，它会把 MP4 格式的参数集直接拼到帧前面，拼出来的流是坏的，拉流端解不出画面
+
+> 用 Windows 上的 ffmpeg 推 MP4 文件时，同样加上 `-bsf:v h264_mp4toannexb -pkt_size 1200`。
 
 同一轮还修复了播放器的几个问题（`Player.vue`）：
 - **切换浏览器标签后卡住**：Chrome 会暂停后台标签页里只有视频、没有音频的媒体（AI 输出流没有音频），切回来时 HTTP 直播流已经落后很多甚至卡住。现在切回标签页时，fMP4 模式会自动重连，直接跳到最新画面
