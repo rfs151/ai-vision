@@ -75,10 +75,21 @@ async function start() {
     v.onended = retry
     v.src = props.urls.fmp4
     v.play().catch(() => {})
-    // HTTP streaming slowly drifts behind live; jump forward when more than 2 s behind
+    // HTTP streaming drifts behind live. Only act once playback has really started:
+    // before that currentTime is 0 while buffered starts at the stream's timestamp (e.g. 438 s),
+    // and seeking every second then stalls loading for good (the bug that froze fMP4 playback).
+    // Small lag: play 10% faster. Large lag: jump, at most once per 5 s.
+    let lastSeek = 0
     chaser = setInterval(() => {
       const b = v.buffered
-      if (b.length && b.end(b.length - 1) - v.currentTime > 2) v.currentTime = b.end(b.length - 1) - 0.3
+      if (!b.length || v.paused || v.readyState < 3 || v.currentTime === 0) return
+      const lag = b.end(b.length - 1) - v.currentTime
+      if (lag > 3 && Date.now() - lastSeek > 5000) {
+        lastSeek = Date.now()
+        v.currentTime = b.end(b.length - 1) - 0.5
+      } else {
+        v.playbackRate = lag > 1.2 ? 1.1 : 1.0
+      }
     }, 1000)
   }
 }

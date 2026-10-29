@@ -139,6 +139,16 @@ Vue3 + Vite + Element Plus（`web/`）。构建后由控制服务提供页面，
 - `components/RuleCanvas.vue`：canvas 覆盖在视频上，坐标按画面宽高归一化，和 `worker/rules.py` 一致；容器保持视频原始宽高比，视频用 `object-fit: fill`，保证画的位置就是 Worker 判断用的位置；IN 箭头的方向和 Worker 用同一个公式计算
 - `store.js`：WebSocket 断线后按 1、2、4……15 秒的间隔自动重连，告警、Worker 状态、设备变化都实时更新
 
+**端到端播放测试**（`web/e2e/playtest.mjs`）：用无界面 Chrome 打开监控大屏，分别测试 AI/原始画面 × WebRTC/fMP4 四种组合，每 5 秒统计一次实际解码的帧数。帧数稳定在"帧率 × 5"表示播放流畅，出现 0 表示卡住。
+
+```bash
+cd web && node e2e/playtest.mjs "$(which google-chrome)" /tmp/shots 40     # 同时保存各页面截图
+```
+
+这个测试发现并验证修复了两个问题：
+- fMP4 卡住：直播流的时间戳从推流开始累计（比如 438 秒），而视频刚开始播放时播放进度是 0，原来的追帧逻辑把这个差距当成落后了 438 秒，于是每秒都往前跳，打断加载，画面卡死。现在等真正开始播放后才检查；落后不多时用 1.1 倍速追赶，落后超过 3 秒才跳转，两次跳转至少间隔 5 秒
+- WebRTC 播放带 B 帧的流会卡住：测试视频改成不带 B 帧编码（`-bf 0`）。接入真实摄像头时，也要在摄像头设置里关闭 B 帧（大部分网络摄像头默认就没有）
+
 ## 告警规则
 
 规则通过 API（`PUT /api/devices/{id}/rules`）或者 JSON 文件（`--rules`）配置，坐标按画面宽高归一化到 0~1，所以和分辨率无关。示例见 `rules/pedestrians.json`。
