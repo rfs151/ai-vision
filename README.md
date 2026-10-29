@@ -7,8 +7,11 @@
 ```
 摄像头 / OBS / ffmpeg ──▶ ZLMediaKit ──RTSP──▶ AI Worker ──画框后的流──▶ ZLMediaKit ──▶ 浏览器
                          (live/<name>)            │                       (ai/<name>)    WebRTC / FLV / fMP4
-                                                  ├─ 解码（每一帧）→ 按时间外推跟踪框 → 画框 → x264 编码
-                                                  └─ 分析线程（5fps）：YOLO → ByteTrack → 规则 → 告警（截图 + JSONL）
+                              │ Hook              ├─ 解码（每一帧）→ 按时间外推跟踪框 → 画框 → x264 编码
+                              ▼                   └─ 分析线程（5fps）：YOLO → ByteTrack → 规则 → 告警
+                    控制服务 FastAPI :8090  ◀──── 拉取规则（热更新）/ 上报告警和截图 / 心跳 ────┘
+                    设备、规则、告警（SQLite） ──▶ WebSocket /ws 实时推送给浏览器
+                    Worker 管理：流上线启动、下线停止，崩溃或无心跳时自动重启
 ```
 
 | 模块 | 文件 | 说明 |
@@ -16,7 +19,8 @@
 | 检测 | `worker/detector.py` | OpenVINO YOLO，手写 letterbox 和 NMS |
 | 跟踪 | `worker/tracker.py` | ByteTrack：高分框和低分框两轮匹配（匈牙利算法），卡尔曼滤波按实际时间间隔预测，两次检测之间的帧用速度外推框的位置 |
 | 规则 | `worker/rules.py` | 区域入侵、逗留、人数超限、越线（区分方向） |
-| 告警 | `worker/alarm.py` | 截图（就是触发告警的那一帧）和 `data/alarms/<流名>/events.jsonl` |
+| 告警 | `worker/apiclient.py` / `worker/alarm.py` | 有 `--api` 时在后台线程上传给 API（不阻塞分析线程）；单独运行时写到本地 `data/alarms/<流名>/` |
+| 控制服务 | `api/` | FastAPI + SQLAlchemy；`manager.py` 负责 Worker 进程管理，`routers/hooks.py` 处理 ZLM 回调 |
 
 - **ZLMediaKit**：负责所有流媒体工作（接入、协议转换、分发、录制）
 - **AI Worker**：一路视频对应一个进程。PyAV 负责解码；独立线程按固定帧率（默认 5fps）对最新一帧做 OpenVINO YOLO 推理；每一帧都画上最近一次的检测结果，再用 ffmpeg(x264 zerolatency) 推回 ZLM
@@ -26,7 +30,7 @@
 
 - [x] **M1** 单路：拉流 → YOLO 检测 → 画框后回推
 - [x] **M2** ByteTrack 跟踪 + 规则（区域、越线、逗留）+ 告警去重
-- [ ] **M3** FastAPI 控制服务：设备、规则管理，通过 Hook 自动启停 Worker
+- [x] **M3** FastAPI 控制服务：设备、规则管理，通过 Hook 自动启停 Worker
 - [ ] **M4** Vue3 前端：多画面分屏、画区域、实时告警
 - [ ] **M5** 告警截图、前后 10 秒录像、企业微信推送
 - [ ] **M6** 前端叠加画框、性能压测、Docker Compose
@@ -41,20 +45,29 @@ python3 -m venv .venv
 # 2. 导出模型（只需执行一次；把 yolo11n.pt 放到 worker/models/，下载地址见下文）
 scripts/export_model.sh yolo11n          # 生成 worker/models/yolo11n_openvino_model/
 
-# 3. 推一路测试视频（模拟摄像头）
-scripts/push_sample.sh /path/to/video.mp4 sample      # → rtsp://127.0.0.1/live/sample
+# 3. 启动控制服务（ZLM 需要先配置好 Hook，见下文）
+scripts/run_api.sh                       # http://127.0.0.1:8090/docs 是 Swagger 接口文档
 
-# 4. 启动 Worker（--rules 可选，不加就只做检测和跟踪）
-scripts/run_worker.sh sample --rules rules/pedestrians.json   # live/sample → ai/sample
+# 4. 推一路测试视频：API 会自动注册设备并启动 Worker
+scripts/get_sample.sh
+scripts/push_sample.sh data/samples/pedestrians.mp4 ped     # → live/ped，处理后输出 ai/ped
+
+# 5. 下发规则（Worker 不需要重启，5 秒内生效）
+curl -X PUT -H "Content-Type: application/json" --data @rules/pedestrians.json \
+     http://127.0.0.1:8090/api/devices/1/rules
+
+# 6. 查看
+#   http://127.0.0.1/ai/ped.live.mp4                            带检测框的画面
+#   http://127.0.0.1/webrtc/?app=ai&stream=ped&type=play        WebRTC 低延迟播放
+#   http://127.0.0.1:8090/api/alarms                            告警列表（截图地址在 snapshot_url 字段）
+#   http://127.0.0.1:8090/api/workers                           Worker 状态（帧率、推理耗时、区域人数、越线计数）
 
 # 单元测试
+.venv/bin/python -m pip install -r requirements-dev.txt
 .venv/bin/python -m pytest -q tests
-
-# 5. 浏览器播放
-#   http://127.0.0.1/live/sample.live.mp4                                  原始画面
-#   http://127.0.0.1/ai/sample.live.mp4                                    带检测框的画面
-#   http://127.0.0.1/webrtc/?app=ai&stream=sample&type=play                WebRTC 低延迟播放
 ```
+
+不用 API 也能单独运行 Worker：`scripts/run_worker.sh ped --rules rules/pedestrians.json`，告警会写到 `data/alarms/ped/`。
 
 模型下载地址（国内镜像）：`https://modelscope.cn/models/Ultralytics/YOLO11/resolve/master/yolo11n.pt`
 
@@ -62,9 +75,56 @@ Worker 参数：`--det-fps 5`（每秒检测帧数）、`--conf 0.4`（跟踪用
 
 测试视频：执行 `scripts/get_sample.sh` 生成 `data/samples/pedestrians.mp4`。它是 OpenCV 自带的 `vtest.avi`（行人场景，768x576，10fps）转成 H.264 后的文件。访问不了 GitHub 时，设置 `PROXY=http://host:port` 走代理下载。
 
+## 控制服务（M3）
+
+### ZLM Hook 配置（`config.ini` 的 `[hook]` 段）
+
+```ini
+enable=1
+on_stream_changed=http://127.0.0.1:8090/index/hook/on_stream_changed
+on_stream_not_found=http://127.0.0.1:8090/index/hook/on_stream_not_found
+on_server_started=http://127.0.0.1:8090/index/hook/on_server_started
+stream_changed_schemas=rtsp      # 每路流只通知一次（默认每种协议各通知一次）
+```
+
+只开启"通知类"的 Hook。推流和播放鉴权（`on_publish`、`on_play`）默认不开启：鉴权类 Hook 调用失败时 ZLM 会拒绝请求，开启后控制服务一旦挂掉，所有推流和播放都会失败。`on_publish` 接口已经实现好（只允许本机推送到 `ai/` 应用），需要时可以手动开启。
+
+### 流程
+
+| 事件 | 处理 |
+|---|---|
+| 有流推到 `live/<流名>` | `on_stream_changed` 回调：不认识的流会自动注册成设备（`AUTO_APPS=live`），然后启动 Worker |
+| 流下线 | 停止对应的 Worker |
+| 播放一个还没拉取的摄像头 | `on_stream_not_found` 回调：对设置了 `source_url` 的设备调用 ZLM 的 `addStreamProxy` 按需拉流 |
+| ZLM 重启 | `on_server_started` 回调：重新添加拉流代理；控制服务自己启动时也会同步一次（避免漏掉期间的 Hook） |
+| Worker 崩溃 | 管理器每 3 秒检查一次，按 2、4、8……30 秒的间隔递增等待后重启 |
+| Worker 卡死 | 超过 20 秒没有心跳就杀掉进程再重启（`HEARTBEAT_TIMEOUT`） |
+| 修改规则 | 规则版本号加 1；Worker 每 5 秒检查一次版本号，发现变化就重建规则引擎（热更新） |
+
+### 接口
+
+| 接口 | 说明 |
+|---|---|
+| `GET/POST /api/devices`，`GET/PATCH/DELETE /api/devices/{id}` | 设备管理。返回结果里带在线状态、Worker 状态，以及原始流和 AI 流的各种播放地址 |
+| `GET/PUT /api/devices/{id}/rules` | 规则（用 Pydantic 校验，比如多边形至少 3 个点） |
+| `POST /api/devices/{id}/worker/{start\|stop\|restart}` | 手动控制 Worker |
+| `GET /api/alarms?stream=&type=&status=&since=&until=&page=&size=` | 告警分页查询 |
+| `PATCH /api/alarms/{id}` | 处理告警：`new` 未处理 / `ack` 已确认 / `false` 误报 |
+| `GET /api/alarms/stats?hours=24` | 按类型、按设备统计数量，以及未处理的数量 |
+| `GET /api/workers`，`GET /api/system` | Worker 运行状态、系统状态 |
+| `WS /ws` | 实时推送 `alarm`、`worker`、`stream`、`rules` 事件 |
+| `/api/internal/*` | 给 Worker 调用：拉取规则、上报告警（multipart，JSON 加截图）、心跳。只允许本机访问，或者设置 `INTERNAL_TOKEN` 后凭令牌访问 |
+
+配置通过环境变量设置，见 `api/config.py`：`ZLM_API`、`ZLM_SECRET`（没设置时从 `ZLM_CONFIG=/opt/zlm/config.ini` 读取）、`AUTO_APPS`、`MAX_WORKERS`、`WORKER_ARGS`、`DATA_DIR`、`DB_URL` 等。
+
+注意事项：
+- **端口用 8090**：WSL 镜像网络模式下 Windows 和 WSL 共用端口，8080 被 Windows 上的 VS Code 占用了
+- **不在日志里记录 secret**：httpx 默认在 INFO 级别记录完整 URL，而 ZLM 的 secret 是 URL 参数，所以把 httpx 的日志级别调到了 WARNING
+- **本机请求不走代理**：调用 ZLM 和 API 的 httpx 客户端都设置了 `trust_env=False`，避免环境变量里的 http 代理拦截本地请求
+
 ## 告警规则
 
-配置文件是 JSON，坐标按画面宽高归一化到 0~1，所以和分辨率无关。示例见 `rules/pedestrians.json`。
+规则通过 API（`PUT /api/devices/{id}/rules`）或者 JSON 文件（`--rules`）配置，坐标按画面宽高归一化到 0~1，所以和分辨率无关。示例见 `rules/pedestrians.json`。
 
 | 规则 | 配置 | 触发条件 |
 |---|---|---|

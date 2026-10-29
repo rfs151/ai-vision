@@ -1,0 +1,43 @@
+"""Settings from environment variables (defaults work for a single-machine setup)."""
+import os
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def _zlm_secret():
+    """ZLM_SECRET env, else read [api] secret from ZLM's config.ini (ZLM_CONFIG)."""
+    if os.getenv("ZLM_SECRET"):
+        return os.environ["ZLM_SECRET"]
+    cfg = Path(os.getenv("ZLM_CONFIG", "/opt/zlm/config.ini"))
+    if cfg.exists():
+        section = None
+        for line in cfg.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = line.strip()
+            if m := re.match(r"^\[(.+)\]$", line):
+                section = m.group(1)
+            elif section == "api" and line.startswith("secret="):
+                return line.split("=", 1)[1].strip()
+    return ""
+
+
+class Settings:
+    data_dir = Path(os.getenv("DATA_DIR", ROOT / "data"))
+    db_url = os.getenv("DB_URL", f"sqlite:///{data_dir / 'ai-vision.db'}")
+    api_url = os.getenv("API_URL", "http://127.0.0.1:8090")     # how workers reach this service
+    zlm_api = os.getenv("ZLM_API", "http://127.0.0.1")           # ZLM http api
+    zlm_rtsp = os.getenv("ZLM_RTSP", "rtsp://127.0.0.1")         # where workers pull/push
+    zlm_secret = _zlm_secret()
+    # Streams published to these apps get a device record + AI worker automatically
+    auto_apps = set(filter(None, os.getenv("AUTO_APPS", "live").split(",")))
+    ai_app = os.getenv("AI_APP", "ai")                            # workers push annotated output here
+    worker_python = os.getenv("WORKER_PYTHON", str(ROOT / ".venv" / "bin" / "python"))
+    worker_script = str(ROOT / "worker" / "worker.py")
+    worker_args = os.getenv("WORKER_ARGS", "")                    # extra args for every worker
+    heartbeat_timeout = float(os.getenv("HEARTBEAT_TIMEOUT", "20"))
+    max_workers = int(os.getenv("MAX_WORKERS", "8"))
+
+
+settings = Settings()
+settings.data_dir.mkdir(parents=True, exist_ok=True)

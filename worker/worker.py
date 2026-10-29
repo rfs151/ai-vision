@@ -13,7 +13,9 @@ Analysis runs on the newest frame only, so slow inference never piles up latency
 import argparse
 import json
 import logging
+import signal
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -22,6 +24,7 @@ import av
 
 import draw
 from alarm import AlarmSink
+from apiclient import ApiClient
 from detector import COCO_NAMES, YoloDetector
 from rules import RuleEngine
 from tracker import ByteTracker, views
@@ -46,6 +49,10 @@ class AnalysisThread(threading.Thread):
         self.pending = None             # (frame, t)
         self.running = True
         self._reset = False
+        self._new_rules = None          # set by the API poller thread, applied in run()
+        self.out_fps = 0.0
+        self.resolution = None
+        self.connected = False
         # Published state, read by the drawing thread (replaced atomically, never mutated)
         self.track_views = []
         self.infer_ms = 0.0
@@ -60,6 +67,20 @@ class AnalysisThread(threading.Thread):
         """Stream reconnected: timestamps restart, so drop all tracking/rule state."""
         self._reset = True
 
+    def set_rules(self, cfg):
+        """Hot reload (called from another thread). Engine is rebuilt on the next frame."""
+        self._new_rules = cfg
+
+    def stats(self):
+        e = self.engine
+        return {
+            "connected": self.connected, "resolution": self.resolution,
+            "out_fps": round(self.out_fps, 1), "infer_ms": round(self.infer_ms, 1),
+            "tracks": len(self.track_views),
+            "zones": {z.id: z.count for z in e.zones} if e else {},
+            "lines": {l.id: {"in": l.n_in, "out": l.n_out} for l in e.lines} if e else {},
+        }
+
     def run(self):
         while self.running:
             t0 = time.monotonic()
@@ -70,6 +91,9 @@ class AnalysisThread(threading.Thread):
             if item is None:
                 continue
             frame, t = item
+            if self._new_rules is not None:
+                self.rules_cfg, self._new_rules = self._new_rules, None
+                self.engine = None      # rebuilt below with the new config (counters restart)
             if self._reset:
                 self._reset = False
                 self.tracker.reset()
@@ -158,11 +182,13 @@ def run_once(args, an):
                 h, w = img.shape[:2]
                 log.info("source %dx%d @ %.2f fps", w, h, fps)
                 encoder = start_encoder(args.dst, w, h, fps)
+                an.connected, an.resolution = True, f"{w}x{h}"
             an.submit(img.copy(), t)
             frames += 1
             elapsed = time.monotonic() - t_start
             if elapsed >= 1:
                 out_fps, frames, t_start = frames / elapsed, 0, time.monotonic()
+                an.out_fps = out_fps
             render(img, t, an, out_fps)
             try:
                 encoder.stdin.write(img.tobytes())
@@ -170,6 +196,7 @@ def run_once(args, an):
                 log.error("encoder exited (code %s)", encoder.poll())
                 return
     finally:
+        an.connected, an.out_fps = False, 0.0
         container.close()
         if encoder:
             try:
@@ -191,19 +218,33 @@ def main():
     ap.add_argument("--conf", type=float, default=0.4, help="high score threshold for tracking")
     ap.add_argument("--classes", default="person,bicycle,car,motorcycle,bus,truck",
                     help="comma separated class names, empty = all")
-    ap.add_argument("--rules", help="rules JSON file (zones / lines)")
-    ap.add_argument("--out", default=str(ROOT / "data" / "alarms"), help="alarm output dir")
+    ap.add_argument("--rules", help="rules JSON file (zones / lines); ignored with --api")
+    ap.add_argument("--api", help="control service URL: rules from API (hot reload), alarms + heartbeat to API")
+    ap.add_argument("--out", default=str(ROOT / "data" / "alarms"), help="alarm output dir (without --api)")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)   # one line per heartbeat is noise
+    # Manager stops us with SIGTERM: exit through finally blocks (closes encoder cleanly)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
     classes = [COCO_NAMES.index(n.strip()) for n in args.classes.split(",")] if args.classes else None
     # Detector keeps low-score boxes too: ByteTrack uses them to keep occluded targets alive
     detector = YoloDetector(args.model, device=args.device, conf=0.1, classes=classes, threads=args.threads)
     tracker = ByteTracker(high_thresh=args.conf, new_thresh=args.conf)
-    rules_cfg = json.loads(Path(args.rules).read_text(encoding="utf-8")) if args.rules else None
     name = args.name or args.src.rstrip("/").split("/")[-1]
-    an = AnalysisThread(detector, tracker, rules_cfg, AlarmSink(name, args.out), args.det_fps)
+
+    client = None
+    if args.api:
+        client = ApiClient(args.api, name)
+        rules_cfg, sink = client.wait_rules(), client
+    else:
+        rules_cfg = json.loads(Path(args.rules).read_text(encoding="utf-8")) if args.rules else None
+        sink = AlarmSink(name, args.out)
+    an = AnalysisThread(detector, tracker, rules_cfg, sink, args.det_fps)
     an.start()
+    if client:
+        client.stats_fn = an.stats
+        client.start(an.set_rules)
 
     # Reconnect with exponential backoff: 1, 2, 4 ... 30 s
     backoff = 1
@@ -211,7 +252,7 @@ def main():
         t0 = time.monotonic()
         try:
             run_once(args, an)
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, SystemExit):
             break
         except Exception as e:  # stream not found, network error, decode error...
             log.warning("stream error: %s", e)
