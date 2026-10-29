@@ -33,15 +33,34 @@ async def sync_with_zlm(app):
                 await zlm.add_proxy(d.app, d.stream, d.source_url)
             except Exception as e:
                 log.info("addStreamProxy %s: %s", d.stream, e)
+    if await reconcile_once(app, devs):
+        log.info("sync done: %d devices", len(devs))
+
+
+async def reconcile_once(app, devs=None):
+    """Level-triggered safety net for lost hooks: make workers match ZLM's stream list."""
     try:
-        online = {(m["app"], m["stream"]) for m in await zlm.media_list()}
+        online = {(m["app"], m["stream"]) for m in await app.state.zlm.media_list()}
     except Exception as e:
         log.warning("ZLM not reachable at %s: %s", settings.zlm_api, e)
-        return
-    for d in devs:
-        if d.ai_enabled and (d.app, d.stream) in online:
-            manager.start(d)
-    log.info("sync done: %d devices, %d online streams", len(devs), len(online))
+        return False      # unknown state: change nothing
+    if devs is None:
+        with SessionLocal() as db:
+            devs = list(db.scalars(select(Device)))
+    manager.reconcile(devs, online)
+    return True
+
+
+async def reconcile_loop(app, interval=3.0):
+    # Short interval on purpose: hooks can be lost (seen under WSL mirrored networking, where most
+    # ZLM -> API hook connects fail with EADDRINUSE), so this loop is the real recovery path.
+    # Cost: one getMediaList call to local ZLM every 3 s.
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await reconcile_once(app)
+        except Exception:
+            log.exception("reconcile failed")
 
 
 @asynccontextmanager
@@ -56,7 +75,9 @@ async def lifespan(app: FastAPI):
         log.warning("ZLM secret not found: set ZLM_SECRET or ZLM_CONFIG")
     sup = asyncio.create_task(manager.supervise())
     await sync_with_zlm(app)
+    rec = asyncio.create_task(reconcile_loop(app))
     yield
+    rec.cancel()
     sup.cancel()
     manager.shutdown()
     await app.state.zlm.close()

@@ -13,9 +13,9 @@ Analysis runs on the newest frame only, so slow inference never piles up latency
 import argparse
 import json
 import logging
+import os
 import signal
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
@@ -31,6 +31,7 @@ from tracker import ByteTracker, views
 
 log = logging.getLogger("worker")
 ROOT = Path(__file__).resolve().parent.parent
+STOP = threading.Event()          # set by SIGTERM
 BANNER_SEC = 3.0
 
 
@@ -176,6 +177,8 @@ def run_once(args, an):
     wall0 = time.monotonic()
     try:
         for frame in container.decode(vstream):
+            if STOP.is_set():
+                return
             img = frame.to_ndarray(format="bgr24")
             t = frame.time if frame.time is not None else time.monotonic() - wall0
             if encoder is None:
@@ -224,8 +227,9 @@ def main():
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)   # one line per heartbeat is noise
-    # Manager stops us with SIGTERM: exit through finally blocks (closes encoder cleanly)
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    # Manager stops us with SIGTERM: only set a flag. The decode loop sees it on the next frame
+    # and leaves through its finally block (encoder closed after a whole frame, not mid-write).
+    signal.signal(signal.SIGTERM, lambda *_: STOP.set())
 
     classes = [COCO_NAMES.index(n.strip()) for n in args.classes.split(",")] if args.classes else None
     # Detector keeps low-score boxes too: ByteTrack uses them to keep occluded targets alive
@@ -248,19 +252,27 @@ def main():
 
     # Reconnect with exponential backoff: 1, 2, 4 ... 30 s
     backoff = 1
-    while True:
+    while not STOP.is_set():
         t0 = time.monotonic()
         try:
             run_once(args, an)
-        except (KeyboardInterrupt, SystemExit):
+        except KeyboardInterrupt:
             break
         except Exception as e:  # stream not found, network error, decode error...
             log.warning("stream error: %s", e)
+        if STOP.is_set():
+            break
         if time.monotonic() - t0 > 30:
             backoff = 1  # ran fine for a while, reset
         log.info("reconnect in %ds", backoff)
-        time.sleep(backoff)
+        STOP.wait(backoff)
         backoff = min(backoff * 2, 30)
+
+    log.info("exiting")
+    logging.shutdown()
+    # Skip interpreter teardown: destroying OpenVINO's C++ worker threads there aborts
+    # ("terminate called without an active exception") and dumps core, which made stops take ~5 s.
+    os._exit(0)
 
 
 if __name__ == "__main__":

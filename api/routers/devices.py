@@ -124,7 +124,7 @@ def put_rules(device_id: int, rules: Rules, db: Session = Depends(get_db)):
 async def worker_action(device_id: int, action: str, request: Request, db: Session = Depends(get_db)):
     dev = get_or_404(db, device_id)
     if action == "stop":
-        manager.stop(dev.stream)
+        manager.stop(dev.stream, manual=True)   # reconcile will not restart it
     elif action in ("start", "restart"):
         if (dev.app, dev.stream) not in await online_set(request):
             raise HTTPException(409, "stream is offline")

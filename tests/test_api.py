@@ -43,8 +43,8 @@ class FakeZLM:
 def client(monkeypatch):
     calls = []
     monkeypatch.setattr(main, "ZLM", FakeZLM)
-    monkeypatch.setattr(manager, "start", lambda dev: calls.append(("start", dev.stream)))
-    monkeypatch.setattr(manager, "stop", lambda s, forget=False: calls.append(("stop", s)))
+    monkeypatch.setattr(manager, "start", lambda dev, **kw: calls.append(("start", dev.stream)))
+    monkeypatch.setattr(manager, "stop", lambda s, **kw: calls.append(("stop", s)))
     with TestClient(main.app) as c:
         c.calls = calls
         yield c
