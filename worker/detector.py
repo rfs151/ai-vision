@@ -42,13 +42,18 @@ class Detection:
 
 class YoloDetector:
     def __init__(self, model_path, device="CPU", imgsz=640, conf=0.35, iou=0.5,
-                 classes=None, names=COCO_NAMES):
+                 classes=None, names=COCO_NAMES, threads=2):
         path = Path(model_path)
         if path.is_dir():  # Ultralytics OpenVINO export dir: *_openvino_model/xxx.xml
             path = next(path.glob("*.xml"))
         core = ov.Core()
-        # LATENCY hint: one request at a time, lowest delay per frame
-        self.model = core.compile_model(str(path), device, {"PERFORMANCE_HINT": "LATENCY"})
+        # LATENCY hint: one request at a time. Default thread count uses every core and
+        # spin-waits: on i5-13500H yolo11n, auto = 43 ms @ 158% CPU vs 2 threads = 44 ms @ 43%.
+        # With many streams per machine, few threads per stream is far more efficient.
+        cfg = {"PERFORMANCE_HINT": "LATENCY"}
+        if device == "CPU" and threads:
+            cfg["INFERENCE_NUM_THREADS"] = threads
+        self.model = core.compile_model(str(path), device, cfg)
         self.imgsz = imgsz
         self.conf = conf
         self.iou = iou

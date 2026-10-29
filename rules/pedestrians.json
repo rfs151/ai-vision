@@ -1,0 +1,25 @@
+{
+  "confirm_frames": 3,
+  "cooldown_sec": 20,
+  "zones": [
+    {
+      "id": "z1",
+      "name": "restricted",
+      "polygon": [[0.60, 0.38], [0.92, 0.36], [1.0, 0.55], [1.0, 0.82], [0.60, 0.70]],
+      "classes": ["person"],
+      "intrusion": true,
+      "dwell_sec": 5,
+      "max_count": 2
+    }
+  ],
+  "lines": [
+    {
+      "id": "l1",
+      "name": "gate",
+      "p1": [0.45, 0.28],
+      "p2": [0.45, 0.72],
+      "classes": ["person"],
+      "alarm_on": null
+    }
+  ]
+}

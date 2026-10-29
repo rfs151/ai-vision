@@ -1,14 +1,17 @@
-"""AI worker: pull a stream from ZLMediaKit, detect, draw boxes, push the result back.
+"""AI worker: pull a stream from ZLMediaKit, detect + track, evaluate rules, push the result back.
 
-    python worker/worker.py --src rtsp://127.0.0.1/live/test --dst rtsp://127.0.0.1/ai/test
+    python worker/worker.py --src rtsp://127.0.0.1/live/test --dst rtsp://127.0.0.1/ai/test \
+        --rules rules/sample.json
 
 Pipeline:
-    PyAV decode (main thread, every frame)
-      ├─> latest frame slot ──> detect thread (every 1/det_fps s, OpenVINO YOLO)
-      └─> draw latest detections ──> ffmpeg (libx264) ──> RTSP push to ZLM
-Detection runs on the newest frame only, so slow inference never piles up latency.
+    PyAV decode (main thread, every frame, time t = frame pts)
+      ├─> latest frame slot ──> analysis thread (every 1/det_fps s):
+      │       YOLO (OpenVINO) -> ByteTrack -> rules -> alarms (snapshot + jsonl)
+      └─> draw tracks extrapolated to t + zones/lines ──> ffmpeg (x264) ──> RTSP push to ZLM
+Analysis runs on the newest frame only, so slow inference never piles up latency.
 """
 import argparse
+import json
 import logging
 import subprocess
 import threading
@@ -16,67 +19,100 @@ import time
 from pathlib import Path
 
 import av
-import cv2
 
+import draw
+from alarm import AlarmSink
 from detector import COCO_NAMES, YoloDetector
+from rules import RuleEngine
+from tracker import ByteTracker, views
 
 log = logging.getLogger("worker")
-
-# Fixed color per class id (BGR)
-PALETTE = [(56, 56, 255), (151, 157, 255), (31, 112, 255), (29, 178, 255), (49, 210, 207),
-           (10, 249, 72), (23, 204, 146), (134, 219, 61), (52, 147, 26), (187, 212, 0)]
+ROOT = Path(__file__).resolve().parent.parent
+BANNER_SEC = 3.0
 
 
-class DetectThread(threading.Thread):
-    """Runs detection on the latest frame at a fixed rate."""
+class AnalysisThread(threading.Thread):
+    """Detect -> track -> rules on the latest frame, at a fixed rate."""
 
-    def __init__(self, detector, det_fps):
+    def __init__(self, detector, tracker, rules_cfg, sink, det_fps):
         super().__init__(daemon=True)
         self.detector = detector
+        self.tracker = tracker
+        self.rules_cfg = rules_cfg
+        self.engine = None              # created on first frame (needs frame size)
+        self.sink = sink
         self.interval = 1.0 / det_fps
         self.cond = threading.Condition()
-        self.frame = None
-        self.dets = []
-        self.infer_ms = 0.0
-        self.det_count = 0
+        self.pending = None             # (frame, t)
         self.running = True
+        self._reset = False
+        # Published state, read by the drawing thread (replaced atomically, never mutated)
+        self.track_views = []
+        self.infer_ms = 0.0
+        self.alarm = None               # (wall_time, text, track_ids, zone_ids)
 
-    def submit(self, frame):
+    def submit(self, frame, t):
         with self.cond:
-            self.frame = frame
+            self.pending = (frame, t)
             self.cond.notify()
+
+    def reset(self):
+        """Stream reconnected: timestamps restart, so drop all tracking/rule state."""
+        self._reset = True
 
     def run(self):
         while self.running:
             t0 = time.monotonic()
             with self.cond:
-                while self.frame is None and self.running:
+                while self.pending is None and self.running:
                     self.cond.wait(0.5)
-                frame, self.frame = self.frame, None
-            if frame is None:
+                item, self.pending = self.pending, None
+            if item is None:
                 continue
-            t1 = time.perf_counter()
-            dets = self.detector.detect(frame)
-            self.infer_ms = (time.perf_counter() - t1) * 1000
-            self.dets = dets  # atomic reference swap
-            self.det_count += 1
+            frame, t = item
+            if self._reset:
+                self._reset = False
+                self.tracker.reset()
+                if self.engine:
+                    self.engine.reset()
+                self.track_views = []
+            try:
+                self._process(frame, t)
+            except Exception:
+                log.exception("analysis failed")
             sleep = self.interval - (time.monotonic() - t0)
             if sleep > 0:
                 time.sleep(sleep)
 
+    def _process(self, frame, t):
+        if self.engine is None and self.rules_cfg:
+            h, w = frame.shape[:2]
+            self.engine = RuleEngine(self.rules_cfg, w, h)
 
-def draw(frame, dets, info):
-    for d in dets:
-        color = PALETTE[d.cls % len(PALETTE)]
-        p1, p2 = (int(d.x1), int(d.y1)), (int(d.x2), int(d.y2))
-        cv2.rectangle(frame, p1, p2, color, 2)
-        label = f"{d.name} {d.score:.2f}"
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-        cv2.rectangle(frame, (p1[0], p1[1] - th - 6), (p1[0] + tw + 4, p1[1]), color, -1)
-        cv2.putText(frame, label, (p1[0] + 2, p1[1] - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                    (255, 255, 255), 1, cv2.LINE_AA)
-    cv2.putText(frame, info, (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
-    return frame
+        t1 = time.perf_counter()
+        dets = self.detector.detect(frame)
+        self.infer_ms = (time.perf_counter() - t1) * 1000
+        tracks = self.tracker.update(dets, t)
+        events = self.engine.update(tracks, t, self.tracker.removed) if self.engine else []
+        self.track_views = views(tracks)
+
+        alarms = [e for e in events if e.alarm]
+        for e in events:
+            if not e.alarm:
+                self.sink.emit(e, None)
+        if alarms:
+            # One snapshot per event, drawn on the exact frame that triggered it
+            ids = {e.track_id for e in alarms}
+            zones = {e.rule_id for e in alarms}
+            snap = frame.copy()
+            draw.draw_rules(snap, self.engine, zones)
+            draw.draw_tracks(snap, tracks, alarm_track_ids=ids)
+            text = " | ".join(f"{e.type} @ {e.rule_name}" + (f" #{e.track_id}" if e.track_id else "")
+                              for e in alarms)
+            draw.draw_banner(snap, "ALARM: " + text)
+            for e in alarms:
+                self.sink.emit(e, snap)
+            self.alarm = (time.monotonic(), "ALARM: " + text, ids, zones)
 
 
 def start_encoder(dst, w, h, fps):
@@ -92,31 +128,42 @@ def start_encoder(dst, w, h, fps):
     return subprocess.Popen(cmd, stdin=subprocess.PIPE)
 
 
-def run_once(args, det_thread):
+def render(img, t, an, out_fps):
+    alarm = an.alarm
+    active = alarm is not None and time.monotonic() - alarm[0] < BANNER_SEC
+    draw.draw_rules(img, an.engine, alarm[3] if active else ())
+    draw.draw_tracks(img, an.track_views, t, alarm[2] if active else ())
+    draw.draw_status(img, f"out {out_fps:.1f}fps | infer {an.infer_ms:.0f}ms | tracks {len(an.track_views)}")
+    if active:
+        draw.draw_banner(img, alarm[1])
+
+
+def run_once(args, an):
     """Process one connection to the source. Returns when the stream ends or errors."""
     log.info("opening %s", args.src)
     container = av.open(args.src, options={"rtsp_transport": "tcp", "timeout": "5000000"}, timeout=10)
+    an.reset()
     vstream = container.streams.video[0]
     vstream.thread_type = "AUTO"
     fps = float(vstream.average_rate or vstream.guessed_rate or 25)
     fps = fps if 1 <= fps <= 60 else 25
     encoder = None
-    frames, t_start = 0, time.monotonic()
-    out_fps = 0.0
+    frames, t_start, out_fps = 0, time.monotonic(), 0.0
+    wall0 = time.monotonic()
     try:
         for frame in container.decode(vstream):
             img = frame.to_ndarray(format="bgr24")
+            t = frame.time if frame.time is not None else time.monotonic() - wall0
             if encoder is None:
                 h, w = img.shape[:2]
                 log.info("source %dx%d @ %.2f fps", w, h, fps)
                 encoder = start_encoder(args.dst, w, h, fps)
-            det_thread.submit(img.copy())
+            an.submit(img.copy(), t)
             frames += 1
             elapsed = time.monotonic() - t_start
             if elapsed >= 1:
                 out_fps, frames, t_start = frames / elapsed, 0, time.monotonic()
-            info = f"out {out_fps:.1f}fps | infer {det_thread.infer_ms:.0f}ms | objs {len(det_thread.dets)}"
-            draw(img, det_thread.dets, info)
+            render(img, t, an, out_fps)
             try:
                 encoder.stdin.write(img.tobytes())
             except BrokenPipeError:
@@ -136,28 +183,34 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True, help="input stream, e.g. rtsp://127.0.0.1/live/test")
     ap.add_argument("--dst", required=True, help="output stream, e.g. rtsp://127.0.0.1/ai/test")
-    ap.add_argument("--model", default=str(Path(__file__).parent / "models" / "yolo11n_openvino_model"))
+    ap.add_argument("--name", help="stream name for alarm output (default: last path part of --src)")
+    ap.add_argument("--model", default=str(ROOT / "worker" / "models" / "yolo11n_openvino_model"))
     ap.add_argument("--device", default="CPU")
+    ap.add_argument("--threads", type=int, default=2, help="OpenVINO CPU threads per worker, 0 = auto")
     ap.add_argument("--det-fps", type=float, default=5)
-    ap.add_argument("--conf", type=float, default=0.35)
+    ap.add_argument("--conf", type=float, default=0.4, help="high score threshold for tracking")
     ap.add_argument("--classes", default="person,bicycle,car,motorcycle,bus,truck",
                     help="comma separated class names, empty = all")
+    ap.add_argument("--rules", help="rules JSON file (zones / lines)")
+    ap.add_argument("--out", default=str(ROOT / "data" / "alarms"), help="alarm output dir")
     args = ap.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
-    classes = None
-    if args.classes:
-        classes = [COCO_NAMES.index(n.strip()) for n in args.classes.split(",")]
-    detector = YoloDetector(args.model, device=args.device, conf=args.conf, classes=classes)
-    det_thread = DetectThread(detector, args.det_fps)
-    det_thread.start()
+    classes = [COCO_NAMES.index(n.strip()) for n in args.classes.split(",")] if args.classes else None
+    # Detector keeps low-score boxes too: ByteTrack uses them to keep occluded targets alive
+    detector = YoloDetector(args.model, device=args.device, conf=0.1, classes=classes, threads=args.threads)
+    tracker = ByteTracker(high_thresh=args.conf, new_thresh=args.conf)
+    rules_cfg = json.loads(Path(args.rules).read_text(encoding="utf-8")) if args.rules else None
+    name = args.name or args.src.rstrip("/").split("/")[-1]
+    an = AnalysisThread(detector, tracker, rules_cfg, AlarmSink(name, args.out), args.det_fps)
+    an.start()
 
     # Reconnect with exponential backoff: 1, 2, 4 ... 30 s
     backoff = 1
     while True:
         t0 = time.monotonic()
         try:
-            run_once(args, det_thread)
+            run_once(args, an)
         except KeyboardInterrupt:
             break
         except Exception as e:  # stream not found, network error, decode error...
