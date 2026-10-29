@@ -31,7 +31,7 @@
 - [x] **M1** 单路：拉流 → YOLO 检测 → 画框后回推
 - [x] **M2** ByteTrack 跟踪 + 规则（区域、越线、逗留）+ 告警去重
 - [x] **M3** FastAPI 控制服务：设备、规则管理，通过 Hook 自动启停 Worker
-- [ ] **M4** Vue3 前端：多画面分屏、画区域、实时告警
+- [x] **M4** Vue3 前端：多画面分屏、画区域、实时告警
 - [ ] **M5** 告警截图、前后 10 秒录像、企业微信推送
 - [ ] **M6** 前端叠加画框、性能压测、Docker Compose
 
@@ -45,14 +45,15 @@ python3 -m venv .venv
 # 2. 导出模型（只需执行一次；把 yolo11n.pt 放到 worker/models/，下载地址见下文）
 scripts/export_model.sh yolo11n          # 生成 worker/models/yolo11n_openvino_model/
 
-# 3. 启动控制服务（ZLM 需要先配置好 Hook，见下文）
-scripts/run_api.sh                       # http://127.0.0.1:8090/docs 是 Swagger 接口文档
+# 3. 构建前端，启动控制服务（ZLM 需要先配置好 Hook，见下文）
+scripts/build_web.sh                     # 需要 Node 18+，生成 web/dist
+scripts/run_api.sh                       # 管理页面 http://127.0.0.1:8090/，接口文档 /docs
 
 # 4. 推一路测试视频：API 会自动注册设备并启动 Worker
 scripts/get_sample.sh
 scripts/push_sample.sh data/samples/pedestrians.mp4 ped     # → live/ped，处理后输出 ai/ped
 
-# 5. 下发规则（Worker 不需要重启，5 秒内生效）
+# 5. 下发规则：在页面「规则配置」里直接画；也可以调用接口（Worker 不需要重启，5 秒内生效）
 curl -X PUT -H "Content-Type: application/json" --data @rules/pedestrians.json \
      http://127.0.0.1:8090/api/devices/1/rules
 
@@ -121,6 +122,22 @@ stream_changed_schemas=rtsp      # 每路流只通知一次（默认每种协议
 - **端口用 8090**：WSL 镜像网络模式下 Windows 和 WSL 共用端口，8080 被 Windows 上的 VS Code 占用了
 - **不在日志里记录 secret**：httpx 默认在 INFO 级别记录完整 URL，而 ZLM 的 secret 是 URL 参数，所以把 httpx 的日志级别调到了 WARNING
 - **本机请求不走代理**：调用 ZLM 和 API 的 httpx 客户端都设置了 `trust_env=False`，避免环境变量里的 http 代理拦截本地请求
+
+## 前端（M4）
+
+Vue3 + Vite + Element Plus（`web/`）。构建后由控制服务提供页面，整个系统只需要一个端口 8090。开发时运行 `cd web && npm run dev`，访问 5173 端口，Vite 会把 `/api`、`/ws`、`/media` 代理到 8090。
+
+| 页面 | 功能 |
+|---|---|
+| 监控大屏 | 1/4/9 分屏；可切换 AI 画面或原始画面、WebRTC 或 HTTP-fMP4；每格显示帧率、推理耗时、目标数、区域人数、越线计数；右侧是实时告警列表；新告警时弹窗，对应画面的边框闪红 |
+| 设备管理 | 设备增删改（推流设备或摄像头拉流地址）；开关 AI 分析；Worker 状态、帧率、重启次数；重启或停止 Worker |
+| 规则配置 | **在实时画面上直接画**区域（多边形）和越线；可以拖动顶点、整体移动、双击边线插入顶点、右键删除顶点；越线可以反转方向；侧边栏编辑类别、逗留、人数上限、告警方向；保存后热更新 |
+| 告警中心 | 24 小时统计卡片；按设备、类型、状态、时间筛选；截图缩略图和大图预览；详情；确认或标记误报；新告警实时追加 |
+
+实现要点：
+- `components/Player.vue`：WebRTC 使用 ZLM 自带的 `ZLMRTCClient.js`（从 ZLM 的 Web 根目录动态加载）；fMP4 使用原生 `<video>`，并且在落后实时画面超过 2 秒时跳到最新位置。两种方式断流后都会每 3 秒自动重试
+- `components/RuleCanvas.vue`：canvas 覆盖在视频上，坐标按画面宽高归一化，和 `worker/rules.py` 一致；容器保持视频原始宽高比，视频用 `object-fit: fill`，保证画的位置就是 Worker 判断用的位置；IN 箭头的方向和 Worker 用同一个公式计算
+- `store.js`：WebSocket 断线后按 1、2、4……15 秒的间隔自动重连，告警、Worker 状态、设备变化都实时更新
 
 ## 告警规则
 

@@ -1,0 +1,7 @@
+html, body, #app { margin: 0; height: 100%; }
+body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--el-bg-color-page); }
+.page { padding: 16px; box-sizing: border-box; height: 100%; overflow: auto; }
+.toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.muted { color: var(--el-text-color-secondary); font-size: 12px; }
+.flash { animation: flash 0.6s ease-in-out 5; }
+@keyframes flash { 50% { box-shadow: 0 0 0 3px #f56c6c inset, 0 0 18px #f56c6c; } }

@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
-from api.config import settings
+from api.config import ROOT, settings
 from api.db import Base, SessionLocal, engine
 from api.hub import hub
 from api.manager import manager
@@ -95,3 +95,9 @@ async def ws(websocket: WebSocket):
             await websocket.receive_text()   # ignore client messages; keeps connection open
     except WebSocketDisconnect:
         hub.disconnect(websocket)
+
+
+# Built frontend (web/dist) at "/". Mounted last so /api, /ws, /index/hook, /media win.
+_dist = ROOT / "web" / "dist"
+if _dist.is_dir():
+    app.mount("/", StaticFiles(directory=_dist, html=True), name="web")

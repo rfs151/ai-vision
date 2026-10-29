@@ -5,3 +5,5 @@ __pycache__/
 worker/models/*
 !worker/models/.gitkeep
 data/
+web/node_modules/
+web/dist/

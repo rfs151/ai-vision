@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, func
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from api.db import Base
@@ -22,7 +22,8 @@ class Device(Base):
     classes: Mapped[str] = mapped_column(String(200), default="person,bicycle,car,motorcycle,bus,truck")
     rules: Mapped[dict] = mapped_column(JSON, default=lambda: dict(DEFAULT_RULES))
     rules_version: Mapped[int] = mapped_column(Integer, default=1)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    # Local time (not SQLite CURRENT_TIMESTAMP, which is UTC): the UI and filters use local time
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 
     alarms = relationship("Alarm", back_populates="device", cascade="all, delete-orphan")
 
@@ -42,7 +43,7 @@ class Alarm(Base):
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     snapshot: Mapped[str | None] = mapped_column(String(300))   # path relative to data dir
     stream_time: Mapped[float] = mapped_column(Float, default=0)  # frame pts (s)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
     status: Mapped[str] = mapped_column(String(20), default="new", index=True)   # new|ack|false
 
     device = relationship("Device", back_populates="alarms")
