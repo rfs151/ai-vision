@@ -49,9 +49,11 @@ scripts/export_model.sh yolo11n          # 生成 worker/models/yolo11n_openvino
 scripts/build_web.sh                     # 需要 Node 18+，生成 web/dist
 scripts/run_api.sh                       # 管理页面 http://127.0.0.1:8090/，接口文档 /docs
 
-# 4. 推一路测试视频：API 会自动注册设备并启动 Worker
-scripts/get_sample.sh
-scripts/push_sample.sh data/samples/pedestrians.mp4 ped     # → live/ped，处理后输出 ai/ped
+# 4. 推测试视频：API 会自动注册设备并启动 Worker
+scripts/get_samples.sh                   # 下载并转码 6 段测试视频到 data/samples/
+scripts/streams.sh start                 # 按 scripts/streams.conf 一次推 6 路 → live/<name>，输出 ai/<name>
+scripts/streams.sh status                # 查看；stop / restart 后面可以跟流名，只操作其中几路
+# 只推一路：scripts/push_sample.sh data/samples/pedestrians.mp4 ped
 
 # 5. 下发规则：在页面「规则配置」里直接画；也可以调用接口（Worker 不需要重启，5 秒内生效）
 curl -X PUT -H "Content-Type: application/json" --data @rules/pedestrians.json \
@@ -74,7 +76,20 @@ curl -X PUT -H "Content-Type: application/json" --data @rules/pedestrians.json \
 
 Worker 参数：`--det-fps 5`（每秒检测帧数）、`--conf 0.4`（跟踪用的高分阈值，0.1 到这个值之间的低分框只用于维持已有目标）、`--classes person,car`（只检测这些类别，留空表示全部 80 类）、`--threads 2`（OpenVINO 推理线程数）、`--device CPU|GPU`、`--rules`、`--out`。
 
-测试视频：执行 `scripts/get_sample.sh` 生成 `data/samples/pedestrians.mp4`。它是 OpenCV 自带的 `vtest.avi`（行人场景，768x576，10fps）转成 H.264 后的文件。访问不了 GitHub 时，设置 `PROXY=http://host:port` 走代理下载。
+测试视频（`scripts/get_samples.sh`，访问不了 GitHub 时设置 `PROXY=http://host:port`，直连失败才走代理）：
+
+| 流名 | 来源 | 画面 | 适合测试 |
+|---|---|---|---|
+| ped | OpenCV `vtest.avi` | 广场行人，768x576 10fps | 越线、区域 |
+| street | Intel `person-bicycle-car-detection` | 街道上的人、自行车、汽车 | 多类别 |
+| cars | Roboflow `vehicles-2` | 高速路车流，平均每帧约 13 辆 | 车辆、越线计数 |
+| people | Intel `people-detection` | 室内人员走动 | 人数超限 |
+| worker | Intel `worker-zone-detection` | 工厂工人 | 危险区域入侵 |
+| store | Intel `store-aisle-detection` | 超市过道 | 逗留 |
+
+转码统一为：宽度不超过 960、帧率不超过 15fps、无 B 帧、每个关键帧带 SPS/PPS、限制关键帧大小（原因见下文排查记录）。没有选 Intel 的 `car-detection`：它是正上方俯拍，COCO 模型几乎认不出这种角度的车（63 帧里只有 1 帧得分超过 0.4）。
+
+`scripts/streams.sh` 给每一路单独开一个进程组，推流断了（比如 ZLM 重启）2 秒后自动重推；PID 文件在 `data/run/`，日志在 `data/logs/push_<name>.log`。新推上来的 `live/*` 流由 Hook 或者每 3 秒一次的对账循环自动登记成设备（WSL 下 Hook 经常发不到，所以对账循环也会登记）。
 
 ## 控制服务（M3）
 
@@ -242,6 +257,30 @@ AI 输出流也一样：ffmpeg 推 RTSP 时，x264 只在开头写一次 SPS/PPS
 | 4 | 31.9 ms | 58% |
 
 默认配置下线程会分散到所有大小核上，还会空转等待，延迟几乎没变，CPU 却多用了 3 倍多。一台机器要跑多路视频时，每路只分少量线程，总吞吐量更高。
+
+### 多路压测：6 路同时运行
+
+6 路视频（768x432 到 960x540，10–15fps），每路每秒检测 5 帧，每路 2 个推理线程：
+
+| 进程（每路一组） | CPU | 内存（PSS） |
+|---|---|---|
+| Worker（解码、检测、跟踪、画框） | 70–85% | 约 195 MB |
+| 输出编码 ffmpeg（x264 ultrafast） | 8–16% | 约 27 MB |
+| 推流 ffmpeg（模拟摄像头，`-c:v copy`） | 不到 1% | 约 15 MB |
+| ZLM（全部 12 路流共用） | 约 11% | 约 105 MB |
+| **合计** | **约 5.6 核，整机 CPU 约 44%** | **约 1.6 GB** |
+
+每路推理耗时 65–90 ms，输出帧率与原视频一致，没有掉帧。按这个比例估算，这台机器大约能跑 10 路。
+
+**踩坑：OpenVINO 绑核**。6 路一起跑时，每帧推理从 40 ms 涨到了 **380 ms**，CPU 却有 80% 空闲。原因是 OpenVINO 默认把推理线程绑到固定的 CPU 核上（`ENABLE_CPU_PINNING`），而每个 Worker 进程各自做决定，6 个进程都绑到了同样的几个核上，只能排队。关掉绑核交给系统调度后降到 62 ms：
+
+| 6 路负载下单独测试 | 推理耗时（中位数） |
+|---|---|
+| 2 线程，绑核（默认） | 380 ms |
+| **2 线程，不绑核（现在的配置）** | **62 ms** |
+| 4 线程，绑核 | 271 ms |
+
+**磁盘 IO**：ZLM 默认给每一路流都实时生成 HLS 切片，12 路一直在写磁盘，约 1.2 MB/s。我们的页面用的是 WebRTC 和 HTTP-fMP4，所以把 `config.ini` 里的 `[protocol] hls_demand` 改成了 `1`，有人播放 HLS 时才生成，写入降到约 0.3 MB/s。
 
 M1 版本在两次检测之间沿用上一次的框，镜头切换或目标移动快时会滞后最多 200ms。M2 加上了卡尔曼速度外推（最多外推 0.5 秒），解决了这个问题。
 

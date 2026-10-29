@@ -44,9 +44,12 @@ async def reconcile_once(app, devs=None):
     except Exception as e:
         log.warning("ZLM not reachable at %s: %s", settings.zlm_api, e)
         return False      # unknown state: change nothing
-    if devs is None:
-        with SessionLocal() as db:
+    with SessionLocal() as db:
+        if devs is None:
             devs = list(db.scalars(select(Device)))
+        known = {(d.app, d.stream) for d in devs}
+        if any([hooks.auto_register(db, a, s) for a, s in sorted(online - known)]):
+            devs = list(db.scalars(select(Device)))    # pick up the new ones
     manager.reconcile(devs, online)
     return True
 

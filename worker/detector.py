@@ -53,6 +53,10 @@ class YoloDetector:
         cfg = {"PERFORMANCE_HINT": "LATENCY"}
         if device == "CPU" and threads:
             cfg["INFERENCE_NUM_THREADS"] = threads
+        if device == "CPU":
+            # Thread pinning is decided per process: with several workers they all pin to the same
+            # cores and queue behind each other. 6 workers: pinned 380 ms per frame, unpinned 62 ms.
+            cfg["ENABLE_CPU_PINNING"] = False
         self.model = core.compile_model(str(path), device, cfg)
         self.imgsz = imgsz
         self.conf = conf

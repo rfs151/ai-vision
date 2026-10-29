@@ -24,17 +24,29 @@ def find_device(db, app, stream):
     return db.scalar(select(Device).where(Device.app == app, Device.stream == stream))
 
 
+def auto_register(db, app, stream):
+    """A stream pushed to an auto app (default "live") becomes a device. Returns None otherwise.
+    Called from the hook and from the reconcile loop (hooks can be lost)."""
+    if app not in settings.auto_apps or app == settings.ai_app:
+        return None
+    if db.scalar(select(Device).where(Device.stream == stream)):
+        return None     # stream names are unique; same name under another app: leave it alone
+    dev = Device(name=stream, app=app, stream=stream)
+    db.add(dev)
+    db.commit()
+    log.info("auto-registered device %s/%s (id=%d)", app, stream, dev.id)
+    hub.publish("device", {"device_id": dev.id, "app": app, "stream": stream})
+    return dev
+
+
 @router.post("/on_stream_changed")
 def on_stream_changed(body: dict, db: Session = Depends(get_db)):
     app, stream, regist = body.get("app"), body.get("stream"), bool(body.get("regist"))
     if body.get("schema") not in (None, "rtsp") or app == settings.ai_app:
         return OK   # one event per stream; ignore our own annotated outputs
     dev = find_device(db, app, stream)
-    if regist and dev is None and app in settings.auto_apps:
-        dev = Device(name=stream, app=app, stream=stream)
-        db.add(dev)
-        db.commit()
-        log.info("auto-registered device %s/%s (id=%d)", app, stream, dev.id)
+    if regist and dev is None:
+        dev = auto_register(db, app, stream)
     log.info("stream %s/%s %s", app, stream, "online" if regist else "offline")
     if dev:
         if regist and dev.ai_enabled:

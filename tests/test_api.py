@@ -70,6 +70,19 @@ def test_hook_filters_other_schemas_and_ai_app(client):
     assert all(d["stream"] != "cam2" for d in client.get("/api/devices").json())
 
 
+def test_reconcile_registers_streams_without_hook(client, monkeypatch):
+    """Hooks can be lost: the reconcile loop must register new live/* streams by itself."""
+    import asyncio
+    client.app.state.zlm.online = {("live", "cam5"), ("ai", "cam5"), ("other", "x")}
+    reconciled = []
+    monkeypatch.setattr(main.manager, "reconcile", lambda devs, online: reconciled.append(sorted(d.stream for d in devs)))
+    asyncio.run(main.reconcile_once(client.app))
+    streams = [d["stream"] for d in client.get("/api/devices").json()]
+    assert "cam5" in streams and "x" not in streams     # only auto apps; ai/ never
+    assert sum(s == "cam5" for s in streams) == 1
+    assert "cam5" in reconciled[0]      # the new device is handed to the manager right away
+
+
 def test_stream_offline_stops_worker(client):
     changed(client, "live", "cam3", True)
     changed(client, "live", "cam3", False)

@@ -41,7 +41,7 @@ export function connectWS() {
       store.lastAlarm = { alarm: data, at: Date.now() }
     } else if (type === 'worker' && data) {
       store.workers[data.stream] = data
-    } else if (type === 'stream' || type === 'rules') {
+    } else if (type === 'stream' || type === 'rules' || type === 'device') {
       loadDevices().catch(() => {})
     }
     listeners.forEach(fn => fn(type, data))
