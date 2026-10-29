@@ -22,7 +22,8 @@ const video = ref(null)
 const status = ref('connecting')
 const statusText = computed(() => ({ connecting: '连接中…', retry: '无信号，重试中…' }[status.value] || ''))
 
-let rtc = null, timer = null, chaser = null, alive = true
+let rtc = null, timer = null, chaser = null, watchdog = null, alive = true
+const STALL_MS = 6000
 
 function loadRTCClient() {
   if (window.ZLMRTCClient) return Promise.resolve()
@@ -41,13 +42,15 @@ function loadRTCClient() {
 function stop() {
   clearTimeout(timer)
   clearInterval(chaser)
+  clearInterval(watchdog)
   if (rtc) { try { rtc.close() } catch { /* ignore */ } rtc = null }
   const v = video.value
   if (v) { v.pause(); v.removeAttribute('src'); v.srcObject = null; v.load() }
 }
 
-function retry() {
+function retry(reason) {
   if (!alive) return
+  console.info('[player] retry in 3s:', typeof reason === 'string' ? reason : reason?.type || reason, props.urls.fmp4)
   status.value = 'retry'
   stop()
   timer = setTimeout(start, 3000)
@@ -58,6 +61,14 @@ async function start() {
   status.value = 'connecting'
   const v = video.value
   v.onplaying = () => { status.value = 'playing' }
+  // Freeze watchdog (both modes): visible + supposed to be playing + position not moving -> reconnect.
+  // Catches silent freezes: publisher restarted without a WebRTC state change, stalled HTTP stream...
+  let lastCt = -1, lastMove = Date.now()
+  watchdog = setInterval(() => {
+    if (document.visibilityState !== 'visible' || status.value !== 'playing') { lastMove = Date.now(); return }
+    if (v.currentTime !== lastCt) { lastCt = v.currentTime; lastMove = Date.now(); return }
+    if (Date.now() - lastMove > STALL_MS) retry('stalled ' + STALL_MS / 1000 + 's')
+  }, 1000)
   if (props.mode === 'webrtc') {
     try { await loadRTCClient() } catch { return retry() }
     const Z = window.ZLMRTCClient
@@ -78,17 +89,18 @@ async function start() {
     // HTTP streaming drifts behind live. Only act once playback has really started:
     // before that currentTime is 0 while buffered starts at the stream's timestamp (e.g. 438 s),
     // and seeking every second then stalls loading for good (the bug that froze fMP4 playback).
-    // Small lag: play 10% faster. Large lag: jump, at most once per 5 s.
+    // Chrome itself keeps ~2.5 s buffered, so "lag" below that is normal.
+    // Small extra lag: play 10% faster. Large lag: jump, at most once per 5 s.
     let lastSeek = 0
     chaser = setInterval(() => {
       const b = v.buffered
       if (!b.length || v.paused || v.readyState < 3 || v.currentTime === 0) return
       const lag = b.end(b.length - 1) - v.currentTime
-      if (lag > 3 && Date.now() - lastSeek > 5000) {
+      if (lag > 5 && Date.now() - lastSeek > 5000) {
         lastSeek = Date.now()
-        v.currentTime = b.end(b.length - 1) - 0.5
+        v.currentTime = b.end(b.length - 1) - 1
       } else {
-        v.playbackRate = lag > 1.2 ? 1.1 : 1.0
+        v.playbackRate = lag > 3.5 ? 1.1 : 1.0
       }
     }, 1000)
   }
@@ -99,9 +111,32 @@ function onMeta() {
   if (v.videoWidth) emit('size', { w: v.videoWidth, h: v.videoHeight })
 }
 
-watch(() => [props.mode, props.urls.webrtc, props.urls.fmp4], start)
-onMounted(start)
-onBeforeUnmount(() => { alive = false; stop() })
+// Multi-source watch compares each value. (A getter returning a new array changes on every
+// device-list refresh and restarted the player even though the URLs were the same.)
+watch([() => props.mode, () => props.urls.webrtc, () => props.urls.fmp4], (n, o) => {
+  console.info('[player] restart: props changed', JSON.stringify(o), '->', JSON.stringify(n))
+  start()
+})
+
+// Background tabs: Chrome suspends video-only media (our ai/ streams have no audio) and
+// throttles timers, so an HTTP live stream comes back far behind live or frozen.
+// When the tab is visible again, reconnect to jump straight to live. WebRTC keeps running.
+function onVisibility() {
+  if (document.visibilityState === 'visible' && props.mode === 'fmp4' && alive) {
+    console.info('[player] restart: tab visible again, jump to live')
+    start()
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('visibilitychange', onVisibility)
+  start()
+})
+onBeforeUnmount(() => {
+  alive = false
+  document.removeEventListener('visibilitychange', onVisibility)
+  stop()
+})
 </script>
 
 <style scoped>

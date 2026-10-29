@@ -147,7 +147,10 @@ def start_encoder(dst, w, h, fps):
         "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-r", f"{fps}", "-i", "-",
         "-an", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
         "-pix_fmt", "yuv420p", "-g", str(int(fps * 2)), "-bf", "0",
-        "-f", "rtsp", "-rtsp_transport", "tcp", dst,
+        # 1200-byte RTP: ZLM forwards RTSP-pushed RTP to WebRTC players unchanged. ffmpeg's default
+        # (1472) + WebRTC header extensions + SRTP exceeds a 1500 MTU; on such paths (e.g. WSL
+        # mirrored networking) every large packet is dropped and WebRTC never decodes a frame.
+        "-f", "rtsp", "-rtsp_transport", "tcp", "-pkt_size", "1200", dst,
     ]
     log.info("encoder: %s", " ".join(cmd))
     return subprocess.Popen(cmd, stdin=subprocess.PIPE)
