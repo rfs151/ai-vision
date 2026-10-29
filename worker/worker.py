@@ -147,6 +147,9 @@ def start_encoder(dst, w, h, fps):
         "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}", "-r", f"{fps}", "-i", "-",
         "-an", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
         "-pix_fmt", "yuv420p", "-g", str(int(fps * 2)), "-bf", "0",
+        # Cap keyframe size (~30 KB instead of ~135 KB). WebRTC sends a frame as one burst of UDP
+        # packets; WSL -> Windows drops part of bursts over ~90 packets and the player froze.
+        "-crf", "23", "-maxrate", "1200k", "-bufsize", "300k",
         # 1200-byte RTP: ZLM forwards RTSP-pushed RTP to WebRTC players unchanged. ffmpeg's default
         # (1472) + WebRTC header extensions + SRTP exceeds a 1500 MTU; on such paths (e.g. WSL
         # mirrored networking) every large packet is dropped and WebRTC never decodes a frame.
