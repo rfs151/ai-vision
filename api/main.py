@@ -17,11 +17,21 @@ from api.hub import hub
 from api.manager import manager
 from api.models import Device
 from api.notify import notifier
-from api import tracks
+from api import retention, tracks
 from api.routers import alarms, devices, hooks, internal, notify
 from api.zlm import ZLM
 
 log = logging.getLogger("main")
+
+
+class QuietPolling(logging.Filter):
+    """Drop access-log lines for the workers' periodic calls (heartbeat every 5 s, rules check):
+    they made up nearly all of the log, which grows without limit under Docker."""
+    PATHS = ("/api/internal/heartbeat/", "/api/internal/rules/")
+
+    def filter(self, record):
+        args = record.args
+        return not (isinstance(args, tuple) and len(args) >= 3 and str(args[2]).startswith(self.PATHS))
 
 
 async def sync_with_zlm(app):
@@ -74,6 +84,7 @@ async def lifespan(app: FastAPI):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     # httpx logs every request URL at INFO; ZLM's secret is a query parameter -> keep it out of logs
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.access").addFilter(QuietPolling())
     migrate()
     notify.load()
     hub.loop = asyncio.get_running_loop()
@@ -84,7 +95,9 @@ async def lifespan(app: FastAPI):
     await sync_with_zlm(app)
     rec = asyncio.create_task(reconcile_loop(app))
     udp = await tracks.start()
+    ret = asyncio.create_task(retention.loop())
     yield
+    ret.cancel()
     if udp:
         udp.close()
     rec.cancel()
@@ -94,7 +107,7 @@ async def lifespan(app: FastAPI):
     await notifier.close()
 
 
-app = FastAPI(title="ai-vision", version="0.5.0", lifespan=lifespan)
+app = FastAPI(title="ai-vision", version="0.6.0", lifespan=lifespan)
 app.include_router(devices.router)
 app.include_router(alarms.router)
 app.include_router(hooks.router)

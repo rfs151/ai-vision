@@ -6,8 +6,16 @@
 #
 # network_mode host: WebRTC uses UDP and announces the host IP; host networking is the simplest
 # correct setup on a single server (no NAT, no port lists). Ports are set in .env.
+# Container logs: Docker keeps them forever by default; cap each container at 3 x 10 MB
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   zlm:
+    logging: *logging
     image: ${ZLM_IMAGE:-zlmediakit/zlmediakit:master}
     network_mode: host
     restart: unless-stopped
@@ -25,6 +33,7 @@ services:
       ZLM_RTC_PORT: ${ZLM_RTC_PORT:-8000}
 
   app:
+    logging: *logging
     build:
       context: .
       args:
@@ -53,9 +62,12 @@ services:
       PLAY_RTSP_PORT: ${ZLM_RTSP_PORT:-554}
       MAX_WORKERS: ${MAX_WORKERS:-8}
       WORKER_ARGS: ${WORKER_ARGS:-}
+      MEDIA_KEEP_DAYS: ${MEDIA_KEEP_DAYS:-7}
+      MEDIA_MAX_GB: ${MEDIA_MAX_GB:-5}
 
   # Simulated cameras: downloads the sample videos once (data/samples), then loops them into live/*
   demo:
+    logging: *logging
     image: ai-vision:latest
     profiles: ["demo"]
     network_mode: host

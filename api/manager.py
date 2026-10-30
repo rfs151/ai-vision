@@ -100,7 +100,14 @@ class WorkerManager:
         return w
 
     def _spawn(self, w):
-        logf = open(self.log_dir / f"worker_{w.stream}.log", "ab")
+        path = self.log_dir / f"worker_{w.stream}.log"
+        # Appended across restarts; roll over at 5 MB (keep one old file) so a crash loop can't fill the disk
+        try:
+            if path.stat().st_size > 5 * 1024 * 1024:
+                path.replace(path.with_suffix(".log.1"))
+        except FileNotFoundError:
+            pass
+        logf = open(path, "ab")
         # New session: a Ctrl+C on the API does not hit workers directly; we stop them ourselves
         w.proc = subprocess.Popen(w.args, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True)
         logf.close()

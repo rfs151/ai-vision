@@ -9,7 +9,8 @@
 #                                         them all (for containers: docker compose --profile demo)
 #
 # Every stream runs in its own process group with a retry loop (ZLM restart -> push again in 2 s).
-# PID files: data/run/push_<name>.pid   logs: data/logs/push_<name>.log
+# PID files: data/run/push_<name>.pid   logs: data/logs/push_<name>.log (emptied on start and
+# whenever it passes 1 MB, e.g. while ZLM is down and the loop retries every 2 s)
 # CONF=other.conf scripts/streams.sh start   uses another list.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -35,15 +36,21 @@ start_one() {
   local name=$1 file=$2
   if [ -n "$(pid_of "$name")" ]; then echo "  $name: already running"; return; fi
   if [ ! -s "$file" ]; then echo "  $name: $file not found (run scripts/get_samples.sh)"; return; fi
-  # setsid: own process group, so stop can kill the loop and its ffmpeg together
+  local log="$LOGS/push_$name.log"
+  : > "$log"
+  # setsid: own process group, so stop can kill the loop and its ffmpeg together.
+  # The log is opened in append mode, so truncating it in place is safe while ffmpeg writes to it.
   setsid bash -c '
     trap "exit 0" TERM
     while true; do
+      if [ "$(stat -c %s "$3" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+        : > "$3"; echo "$(date "+%F %T") log over 1 MB, emptied"
+      fi
       echo "$(date "+%F %T") push start"
       scripts/push_sample.sh "$1" "$2" || true
       echo "$(date "+%F %T") push exited, retry in 2s"
       sleep 2
-    done' _ "$file" "$name" >> "$LOGS/push_$name.log" 2>&1 < /dev/null &
+    done' _ "$file" "$name" "$log" >> "$log" 2>&1 < /dev/null &
   echo $! > "$RUN/push_$name.pid"
   echo "  $name: started (pid $!)  ${ZLM_RTSP:-rtsp://127.0.0.1}/live/$name  <- $file"
 }

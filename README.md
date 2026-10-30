@@ -447,6 +447,12 @@ Worker 输出编码（x264，只编码一次）
 - **限流**：每个渠道每分钟最多 20 条，超出的只计数、不排队（几分钟后才补发的旧告警没有意义）。
 - **按类型过滤**、**推送状态**（最近一次成功与否、失败原因、限流条数）都在设置页上。
 
+**自动清理**（`api/retention.py`）：每段录像约 3.4 MB。一路告警多的视频（每小时 40 多条）一天能产生约 3 GB，所以控制服务每小时清理一次（启动时也清理一次）：
+- 截图和录像超过 `MEDIA_KEEP_DAYS`（默认 7 天）就删除。
+- 两者合计超过 `MEDIA_MAX_GB`（默认 5 GB），就从最旧的开始删，直到不超过上限。
+- 告警记录保留在数据库里，只清空截图和录像链接；手动删掉的文件，对应的链接也会被清空，页面上不会出现打不开的录像。
+- 设置为 `0` 表示不限制。
+
 ### 5.6 前端叠加画框（M6）
 
 | 选项 | 画面 | 框 |
@@ -765,10 +771,28 @@ docker compose --profile demo up -d        # 可选：下载 6 段测试视频�
 | 停止 / 启动演示推流 | `docker compose stop demo` / `docker compose --profile demo up -d` |
 | 全部停止 | `docker compose --profile demo down`（数据在 `./data`，不会丢） |
 | 备份 | 打包 `data/`（数据库、截图、录像）和 `.env` |
+| 改清理策略 | `.env` 里设置 `MEDIA_KEEP_DAYS`、`MEDIA_MAX_GB`，然后 `docker compose up -d` |
 
 - 重启 ZLM 会断开所有推流：demo 容器会自动重推，Worker 跟着恢复；外部推流端要自己重推。
 - 页面上关闭了 AI 的设备不会自动启动 Worker，要在「设备管理」里打开。
 - 演示完建议修改服务器 root 密码，改用 SSH 密钥登录。
+
+### 8.5 磁盘占用
+
+| 位置 | 增长 | 上限 / 清理方式 |
+|---|---|---|
+| `data/clips` 告警录像 | 每条告警约 3.4 MB，告警多时一天约 3 GB | `MEDIA_KEEP_DAYS` / `MEDIA_MAX_GB` 自动清理（见 5.5） |
+| `data/alarms` 告警截图 | 每张约 100 KB | 同上，和录像一起算 |
+| `data/logs/push_*.log` | ZLM 停止时每 2 秒一条重试记录 | 每次启动时清空，超过 1 MB 自动清空 |
+| `data/logs/worker_*.log` | 很少，Worker 反复崩溃重启时会变多 | 启动 Worker 时超过 5 MB 就改名为 `.log.1`，每路最多 10 MB |
+| `/dev/shm/ai-vision-ring` | 每路约 10 MB，内存盘 | 只保留最近 60 秒 |
+| ZLM 日志（本机 `/var/log/zlm`） | 约 30 MB/天 | ZLM 默认只保留 7 天（`-m` 参数） |
+| ZLM HLS 切片（`www/<app>/<stream>/`） | 只在有人播放 HLS 时生成 | `hls_demand=1`，ZLM 自动删除旧切片 |
+| Docker 容器日志 | 控制服务的访问日志 | 每个容器 3 × 10 MB；Worker 心跳和规则检查不记访问日志 |
+| Docker 构建缓存 | 每次 `--build` 增加 | `docker builder prune -f` 手动清理 |
+
+告警数量主要由规则的**冷却时间**决定：同一条规则的同一种告警，冷却时间内最多发一次。人多的画面上"逗留""人数超限"会持续触发，冷却时间从 20 秒改到 300 秒，录像量能少到原来的十几分之一。
+
 
 ---
 

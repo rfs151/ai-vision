@@ -40,6 +40,9 @@ class Settings:
     worker_args = os.getenv("WORKER_ARGS", "")                    # extra args for every worker
     heartbeat_timeout = float(os.getenv("HEARTBEAT_TIMEOUT", "20"))
     max_workers = int(os.getenv("MAX_WORKERS", "8"))
+    # Alarm snapshots + clips: delete files older than N days, and the oldest beyond N GB (0 = off)
+    media_keep_days = float(os.getenv("MEDIA_KEEP_DAYS", "7"))
+    media_max_gb = float(os.getenv("MEDIA_MAX_GB", "5"))
 
 
 settings = Settings()
