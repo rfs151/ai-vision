@@ -78,4 +78,6 @@ services:
     environment:
       <<: *app_env
       PROXY: ${DOWNLOAD_PROXY:-}
-    command: ["bash", "-c", "scripts/get_samples.sh && exec scripts/streams.sh run"]
+    # PID files in data/run belong to the previous container (or a native run): a stale pid can
+    # match an unrelated process here and make streams.sh skip the push, so clear them first
+    command: ["bash", "-c", "scripts/get_samples.sh && rm -f data/run/push_*.pid && exec scripts/streams.sh run"]

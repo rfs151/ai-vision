@@ -8,6 +8,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 
@@ -108,6 +109,19 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ai-vision", version="0.6.0", lifespan=lifespan)
+
+
+class _GZip(GZipMiddleware):
+    # Compress the web UI and API; skip /media (videos/images are already compressed
+    # and video seeking uses Range requests).
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and not scope["path"].startswith("/media"):
+            await super().__call__(scope, receive, send)
+        else:
+            await self.app(scope, receive, send)
+
+
+app.add_middleware(_GZip, minimum_size=1024)
 app.include_router(devices.router)
 app.include_router(alarms.router)
 app.include_router(hooks.router)

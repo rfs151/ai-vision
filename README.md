@@ -681,7 +681,9 @@ python3 scripts/bench.py --api http://127.0.0.1:18090
 
 ## 8. 部署与运维
 
-### 8.1 本机运维
+### 8.1 本机运维（原生方式）
+
+本机是开发机，用原生方式运行（systemd 的 ZLM + venv 里的控制服务），改完代码重启即可生效。Docker 只用于部署云服务器，本机只在部署前验证镜像能否构建（见 [8.4](#84-部署前在本机验证镜像)）。
 
 | 操作 | 命令 |
 |---|---|
@@ -761,7 +763,22 @@ docker compose --profile demo up -d        # 可选：下载 6 段测试视频�
    ```
    再在浏览器里打开 `http://<服务器IP>:8090/#/wall`，分别测试 WebRTC、HTTP-fMP4、原始 + 前端画框。
 
-### 8.4 更新和日常操作（Docker）
+### 8.4 部署前在本机验证镜像
+
+改了 `Dockerfile`、`docker-compose.yml`、`requirements.txt` 或前端依赖后，先在本机构建一次，确认没问题再上服务器。只构建，不启动，原生 ZLM 和控制服务照常运行（启动容器会和原生 ZLM 抢 80/554/1935/8000 端口）。
+
+```bash
+cd /root/proj/ai-vision
+# 本机的 .env 只用于构建：打开国内镜像源（compose 要求 ZLM_SECRET 有值，随便填）
+cp .env.example .env
+sed -i -e "s/^ZLM_SECRET=.*/ZLM_SECRET=$(openssl rand -hex 16)/" \
+       -e 's/^# \(ZLM_IMAGE\|REGISTRY\|PIP_INDEX\|NPM_REGISTRY\|APT_MIRROR\|TORCH_INDEX\|MODEL_URL\|DOWNLOAD_PROXY\)=/\1=/' .env
+chmod 600 .env
+docker compose build app                 # 用 worker/models 里导出好的模型，不装 torch
+docker builder prune -f                  # 可选：清理构建缓存
+```
+
+### 8.5 更新和日常操作（Docker）
 
 | 操作 | 命令（在 `/opt/ai-vision`） |
 |---|---|
@@ -777,7 +794,7 @@ docker compose --profile demo up -d        # 可选：下载 6 段测试视频�
 - 页面上关闭了 AI 的设备不会自动启动 Worker，要在「设备管理」里打开。
 - 演示完建议修改服务器 root 密码，改用 SSH 密钥登录。
 
-### 8.5 磁盘占用
+### 8.6 磁盘占用
 
 | 位置 | 增长 | 上限 / 清理方式 |
 |---|---|---|
