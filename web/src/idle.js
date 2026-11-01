@@ -5,7 +5,7 @@
 // 时长可用 URL 参数覆盖，方便演示：#/wall?idle=1 表示 1 分钟。
 import { reactive } from 'vue'
 
-const DEFAULT_IDLE_MIN = Number(import.meta.env.VITE_VIDEO_IDLE_MIN || 5)
+const DEFAULT_IDLE_MIN = Number(import.meta.env.VITE_VIDEO_IDLE_MIN || 2)
 const HIDDEN_MS = 30 * 1000
 
 export const videoGate = reactive({
