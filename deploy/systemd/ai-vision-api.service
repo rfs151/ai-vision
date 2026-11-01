@@ -1,0 +1,18 @@
+# 本机原生运行 ai-vision 控制服务（:8090，Worker 由它启动和管理）
+#   cp deploy/systemd/ai-vision-*.service /etc/systemd/system/ && systemctl daemon-reload
+#   systemctl enable --now ai-vision-api ai-vision-streams
+[Unit]
+Description=ai-vision control service (:8090)
+After=network-online.target zlm.service
+Wants=network-online.target zlm.service
+
+[Service]
+WorkingDirectory=/root/proj/ai-vision
+ExecStart=/root/proj/ai-vision/scripts/run_api.sh
+Restart=always
+RestartSec=5
+# Worker 收到 SIGTERM 后正常退出，留够时间
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

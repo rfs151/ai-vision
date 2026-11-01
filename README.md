@@ -292,7 +292,7 @@ scripts/run_api.sh                       # 管理页面 http://127.0.0.1:8090/�
 
 # 3. 推测试视频：API 会自动注册设备并启动 Worker
 scripts/get_samples.sh                   # 下载并转码 6 段测试视频到 data/samples/
-scripts/streams.sh start                 # 按 scripts/streams.conf 一次推 6 路 → live/<name>，输出 ai/<name>
+scripts/streams.sh start                 # 按 scripts/streams.conf 一次推 2 路（默认 ped、street，其余在 conf 里取消注释即可） → live/<name>，输出 ai/<name>
 scripts/streams.sh status                # 查看；stop / restart 后面可以跟流名，只操作其中几路
 # 只推一路：scripts/push_sample.sh data/samples/pedestrians.mp4 ped
 
@@ -713,13 +713,14 @@ python3 scripts/bench.py --api http://127.0.0.1:18090
 
 ### 8.1 本机运维（原生方式）
 
-本机是开发机，用原生方式运行（systemd 的 ZLM + venv 里的控制服务），改完代码重启即可生效。Docker 只用于部署云服务器，本机只在部署前验证镜像能否构建（见 [8.5](#85-部署前在本机验证镜像)）。
+本机是开发机，用原生方式运行（全部是 systemd 服务：ZLM、控制服务、测试推流，开机自启），改完代码重启即可生效。Docker 只用于部署云服务器，本机只在部署前验证镜像能否构建（见 [8.5](#85-部署前在本机验证镜像)）。
 
 | 操作 | 命令 |
 |---|---|
+| 一键启停、状态 | `./ctl.sh start|stop|restart|status|logs [api|streams|zlm]` |
 | ZLM 启停、日志 | `systemctl restart zlm`，`journalctl -u zlm -f`，`/var/log/zlm/` |
-| 控制服务 | `scripts/run_api.sh`（前台运行；Worker 由它启动和管理） |
-| 测试推流 | `scripts/streams.sh start|stop|restart|status [流名...]` |
+| 控制服务 | systemd 服务 `ai-vision-api`（`deploy/systemd/`，运行 `scripts/run_api.sh`；Worker 由它启动和管理） |
+| 测试推流 | systemd 服务 `ai-vision-streams`（`streams.sh run`）；临时操作单路：`scripts/streams.sh start|stop|restart|status [流名...]` |
 | 日志 | `data/logs/worker_<流名>.log`、`data/logs/push_<流名>.log` |
 | 数据 | `data/ai-vision.db`（SQLite）、`data/alarms/`（截图）、`data/clips/`（录像） |
 | 前端改动后 | `scripts/build_web.sh`，刷新页面即可 |
@@ -900,7 +901,7 @@ docker builder prune -f                  # 可选：清理构建缓存
 
 ## 9. 原理问答
 
-开发和部署过程中讨论过的原理问题，结合本项目的代码说明。画框的完整流程见 [docs/box-drawing.md](docs/box-drawing.md)，TensorRT、ReID 等扩展方向见 [docs/cv-tech-notes.md](docs/cv-tech-notes.md)。
+开发和部署过程中讨论过的原理问题，结合本项目的代码说明。画框的完整流程见 [docs/box-drawing.md](docs/box-drawing.md)，TensorRT、ReID 等扩展方向见 [docs/cv-tech-notes.md](docs/cv-tech-notes.md)，花屏、H.265 播放、录像回放、编解码路数、自适应码率见 [docs/video-streaming-qa.md](docs/video-streaming-qa.md)。
 
 ### 9.1 ZLMediaKit 的作用：转封装，不转码
 

@@ -1,0 +1,16 @@
+# 测试推流：按 scripts/streams.conf 循环推测试视频（模拟摄像头），停止时一起停掉
+[Unit]
+Description=ai-vision demo streams (scripts/streams.conf)
+After=ai-vision-api.service zlm.service
+Wants=zlm.service
+
+[Service]
+WorkingDirectory=/root/proj/ai-vision
+# 上次运行留下的 pid 文件可能指向无关进程，先清掉
+ExecStartPre=/bin/sh -c 'rm -f data/run/push_*.pid'
+ExecStart=/root/proj/ai-vision/scripts/streams.sh run
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

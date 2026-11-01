@@ -2,7 +2,7 @@
 #
 #   cp .env.example .env && vi .env          # at least ZLM_SECRET (and PUBLIC_IP on a server)
 #   docker compose up -d --build             # http://<host>:8090
-#   docker compose --profile demo up -d      # + 6 looped test videos (downloaded on first start)
+#   docker compose --profile demo up -d      # + 2 looped test videos (downloaded on first start; more in scripts/streams.conf)
 #
 # network_mode host: WebRTC uses UDP and announces the host IP; host networking is the simplest
 # correct setup on a single server (no NAT, no port lists). Ports are set in .env.
