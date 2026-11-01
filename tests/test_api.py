@@ -62,6 +62,12 @@ def test_stream_online_auto_registers_and_starts_worker(client):
     devs = client.get("/api/devices").json()
     assert [d["stream"] for d in devs] == ["cam1"]
     assert devs[0]["play"]["ai"]["fmp4"].endswith("/ai/cam1.live.mp4")
+    assert devs[0]["play"]["ai"]["fmp4"].startswith("http://testserver")
+    # Through the HTTPS gateway: same-origin URLs, no ZLM port
+    via = client.get("/api/devices", headers={"X-Forwarded-Proto": "https",
+                                              "X-Forwarded-Host": "vision.example.com"}).json()[0]["play"]
+    assert via["ai"]["fmp4"] == "https://vision.example.com/ai/cam1.live.mp4"
+    assert via["source"]["webrtc"].startswith("https://vision.example.com/index/api/webrtc?")
 
 
 def test_hook_filters_other_schemas_and_ai_app(client):

@@ -24,17 +24,23 @@ async def online_set(request: Request):
         return set()
 
 
-def to_out(dev, online, host):
+def to_out(dev, online, where):
     out = DeviceOut.model_validate(dev)
     out.online = (dev.app, dev.stream) in online
     out.worker = manager.status(dev.stream)
-    out.play = {"source": play_urls(dev.app, dev.stream, host),
-                "ai": play_urls(settings.ai_app, dev.stream, host)}
+    out.play = {"source": play_urls(dev.app, dev.stream, **where),
+                "ai": play_urls(settings.ai_app, dev.stream, **where)}
     return out
 
 
 def host_of(request):
-    return request.url.hostname or "127.0.0.1"
+    """Where the browser reached us. Behind the gateway (X-Forwarded-Proto set by Caddy) the play
+    URLs use the same origin: an https page can't load http video (mixed content)."""
+    proto = request.headers.get("x-forwarded-proto")
+    if proto:
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host") or request.url.netloc
+        return {"host": host.split(":")[0], "origin": f"{proto}://{host}"}
+    return {"host": request.url.hostname or "127.0.0.1"}
 
 
 def get_or_404(db, device_id):

@@ -55,9 +55,11 @@ class ZLM:
         await self.client.aclose()
 
 
-def play_urls(app, stream, host="127.0.0.1"):
+def play_urls(app, stream, host="127.0.0.1", origin=None):
+    """Play URLs for a browser. origin set (page came through the HTTPS gateway, which also proxies
+    ZLM's play paths): same-origin https URLs. Otherwise straight to ZLM's port on the page's host."""
     hp, rp = settings.play_http_port, settings.play_rtsp_port
-    http = f"http://{host}" + (f":{hp}" if hp != 80 else "")
+    http = origin or f"http://{host}" + (f":{hp}" if hp != 80 else "")
     rtsp = f"rtsp://{host}" + (f":{rp}" if rp != 554 else "")
     return {
         "webrtc": f"{http}/index/api/webrtc?app={app}&stream={stream}&type=play",

@@ -56,4 +56,5 @@ ENV TZ=Asia/Shanghai \
     API_PORT=8090
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
     CMD curl -fs "http://127.0.0.1:${API_PORT}/api/system" > /dev/null || exit 1
-CMD ["sh", "-c", "exec uvicorn api.main:app --host 0.0.0.0 --port ${API_PORT}"]
+# API_HOST=127.0.0.1 when a reverse proxy on the same host is the only way in
+CMD ["sh", "-c", "exec uvicorn api.main:app --host ${API_HOST:-0.0.0.0} --port ${API_PORT}"]
