@@ -6,7 +6,7 @@ import puppeteer from 'puppeteer-core'
 
 const [bin, out, secsArg] = process.argv.slice(2)
 const SECS = Number(secsArg || 40)
-const BASE = 'http://127.0.0.1:8090/'
+const BASE = process.env.BASE || 'http://127.0.0.1:8090/'   // e.g. BASE=https://vision.edgebot.vip/
 
 const browser = await puppeteer.launch({
   executablePath: bin,

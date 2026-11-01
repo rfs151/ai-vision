@@ -14,6 +14,7 @@
 6. [问题定位记录](#6-问题定位记录)
 7. [性能](#7-性能)
 8. [部署与运维](#8-部署与运维)
+9. [原理问答](#9-原理问答)
 
 ---
 
@@ -71,6 +72,7 @@
 | ✅ 修复 | Worker 不恢复、B 帧、fMP4 卡死、WebRTC 卡住（MTU、SPS/PPS）、多路推理变慢 | `c143985` … `3007925` |
 | ✅ M5 | 告警截图、前后 10 秒录像、企业微信和钉钉推送 | `86b7007` |
 | ✅ M6 | 前端叠加画框、解码延迟修复、压测脚本、Docker Compose、云服务器部署 | `d1adc4f`、`8cb13be` |
+| ✅ 网关 | HTTPS 统一入口 `edgebot.vip`：经网关访问时用同域名 https 播放地址；gzip 压缩 | `853ce23`、`19f66ff` |
 
 ---
 
@@ -303,7 +305,7 @@ curl -X PUT -H "Content-Type: application/json" --data @rules/pedestrians.json \
 #   http://127.0.0.1/ai/ped.live.mp4                            带检测框的画面
 #   http://127.0.0.1:8090/api/workers                           Worker 状态（帧率、推理耗时、区域人数、越线计数）
 
-# 单元测试（37 个）
+# 单元测试（40 个）
 .venv/bin/python -m pytest -q tests
 ```
 
@@ -619,6 +621,34 @@ Intel 的 `car-detection` 素材是正上方俯拍，COCO 训练的模型几乎�
 | 单元测试偶发失败 | 测试先发 SIGTERM，子进程还没来得及设置 `SIG_IGN`。改为子进程准备好后写一个文件，测试等这个文件出现再发信号；连续 20 次通过 |
 | Docker 本机测试端口冲突 | 本机已经有 ZLM 和 API 在跑；用另一套端口的 env 文件和 `-p aivtest` 项目名，或直接在服务器上测 |
 | Ubuntu 自带的 `docker.io` 没有 `docker compose` | `apt install docker-compose-v2 docker-buildx` |
+| demo 容器重启后有的流不推 | `data/run/push_*.pid` 是上一个容器留下的，旧 PID 可能刚好对上新容器里的其他进程，`streams.sh` 以为已经在推。demo 启动前先删掉这些 PID 文件 |
+
+### 6.14 HTTPS 页面里视频放不出来（混合内容）
+
+**现象**：加了 HTTPS 网关（见 [8.4](#84-统一入口网关edgebotvip)）后，`https://vision.edgebot.vip` 页面能打开，视频没有画面。
+
+**原因**：API 返回的播放地址是 `http://<IP>:<ZLM端口>/...`。浏览器禁止 https 页面加载 http 资源（混合内容），WebRTC 信令和 fMP4 请求都被拦截。
+
+**修复**：网关转发请求时带上 `X-Forwarded-Proto: https`。API 看到这个头，就生成同域名的地址 `https://vision.edgebot.vip/ai/ped.live.mp4`，网关再把这些播放路径转给 ZLM（`api/routers/devices.py` 的 `host_of`）。直接用 `http://IP:8090` 打开时，地址不变。
+
+### 6.15 SSH 连云服务器卡住，大文件传不上去
+
+**现象**：`ssh` 经常停在 `expecting SSH2_MSG_KEX_ECDH_REPLY`；`scp` 一个 9 MB 的包传到一半断开，30 KB 的文件也会失败，几 KB 的没问题。
+
+**原因**：本机到服务器的链路丢大包（ping 丢包约 30%）。新版 OpenSSH 默认的密钥交换算法（`sntrup761x25519`）握手包较大，被丢掉后握手就卡住。
+
+**处理**：
+- 指定较小的密钥交换算法：`ssh -o KexAlgorithms=curve25519-sha256 root@<IP>`。
+- 只传改动的文件；必要时切成 3 KB 的小块逐块上传，上传后用 `md5sum` 校验。
+- 长时间的操作（构建镜像、切换服务）写成脚本在服务器上 `nohup` 后台执行，不依赖 SSH 连接一直不断。
+
+### 6.16 改了 Caddyfile，reload 后不生效
+
+**现象**：网关新加了 `medlens` 站点，`caddy reload` 成功，但新站点没有生效，也没有去申请证书。
+
+**原因**：`docker-compose.yml` 挂载的是单个文件（`./Caddyfile:/etc/caddy/Caddyfile`）。Docker 绑定的是文件的 inode，`tar`、`scp`、`mv` 替换文件会生成新的 inode，容器里看到的还是旧文件。
+
+**处理**：`docker compose restart` 重新挂载。之后改配置用 `vi` 或 `cat > Caddyfile` 原地写入，再 `caddy reload`。导航页挂载的是整个目录，不受影响。
 
 ---
 
@@ -683,7 +713,7 @@ python3 scripts/bench.py --api http://127.0.0.1:18090
 
 ### 8.1 本机运维（原生方式）
 
-本机是开发机，用原生方式运行（systemd 的 ZLM + venv 里的控制服务），改完代码重启即可生效。Docker 只用于部署云服务器，本机只在部署前验证镜像能否构建（见 [8.4](#84-部署前在本机验证镜像)）。
+本机是开发机，用原生方式运行（systemd 的 ZLM + venv 里的控制服务），改完代码重启即可生效。Docker 只用于部署云服务器，本机只在部署前验证镜像能否构建（见 [8.5](#85-部署前在本机验证镜像)）。
 
 | 操作 | 命令 |
 |---|---|
@@ -694,7 +724,7 @@ python3 scripts/bench.py --api http://127.0.0.1:18090
 | 数据 | `data/ai-vision.db`（SQLite）、`data/alarms/`（截图）、`data/clips/`（录像） |
 | 前端改动后 | `scripts/build_web.sh`，刷新页面即可 |
 | 资源统计 | `python3 scripts/bench.py` |
-| 测试 | `.venv/bin/python -m pytest -q tests`；播放测试 `web/e2e/playtest.mjs` |
+| 测试 | `.venv/bin/python -m pytest -q tests`；播放测试 `web/e2e/playtest.mjs`（`BASE=<地址>` 可以测服务器，见 9.13） |
 
 ### 8.2 Docker Compose
 
@@ -763,7 +793,62 @@ docker compose --profile demo up -d        # 可选：下载 6 段测试视频�
    ```
    再在浏览器里打开 `http://<服务器IP>:8090/#/wall`，分别测试 WebRTC、HTTP-fMP4、原始 + 前端画框。
 
-### 8.4 部署前在本机验证镜像
+### 8.4 统一入口网关（edgebot.vip）
+
+云服务器上有多个项目，各占一个端口。新增一个 Caddy 网关占用 80/443，按子域名转发到各项目，根域名是导航页，证书由 Caddy 自动申请和续期（Let's Encrypt）。网关的源码在 `/root/proj/gateway`（单独的 Git 仓库），部署在服务器的 `/opt/gateway`。
+
+| 地址 | 内容 | 转发到 |
+|---|---|---|
+| `https://edgebot.vip` | 导航页，每个项目一张卡片，带在线状态灯 | 网关自带的静态页面 |
+| `https://qt.edgebot.vip` | Qt 作品集（WebAssembly） | `127.0.0.1:8080` |
+| `https://scada.edgebot.vip` | PowerGrid SCADA | `127.0.0.1:8088` |
+| `https://vision.edgebot.vip` | **ai-vision** | 页面、API、`/ws` → `127.0.0.1:8090`；播放路径 → ZLM `127.0.0.1:8081` |
+| `https://medlens.edgebot.vip` | MedLens 医疗影像检测 | `127.0.0.1:8010`；`/cpp/*` → C++ 后端 `127.0.0.1:8091` |
+| `http://141.164.45.82` | 用 IP 访问 | ZLM 播放路径转给 ZLM，其他跳到导航页 |
+
+```
+浏览器 ──https──▶ Caddy :443 ──┬─ vision.edgebot.vip ─┬─ /index/api/webrtc、/ZLMRTCClient.js、
+                              │                       │  *.live.mp4|flv、HLS ───▶ ZLM :8081
+                              │                       └─ 其他（页面、/api、/ws、/media） ──▶ API :8090
+                              ├─ qt / scada / medlens ─▶ 各自端口
+                              └─ edgebot.vip ─▶ 导航页；/status/<项目> 转发到各项目的健康检查
+WebRTC 媒体流：浏览器 ◀──UDP/TCP 8000──▶ ZLM（直连，不经过网关）
+```
+
+**ai-vision 的改动**
+
+| `.env` | 值 | 说明 |
+|---|---|---|
+| `ZLM_HTTP_PORT` | `8081` | ZLM 让出 80 给网关。8081 不放行防火墙，只经过网关访问 |
+| `PLAY_HTTP_PORT` | `80` | 直接打开 `http://IP:8090` 时，播放地址用 80 端口（网关转给 ZLM）。不设置时等于 `ZLM_HTTP_PORT` |
+| `API_HOST` | `0.0.0.0` | uvicorn 的监听地址。只允许经过网关访问时改成 `127.0.0.1` |
+
+播放地址按访问方式生成（`api/routers/devices.py`）：
+
+| 访问方式 | 播放地址 |
+|---|---|
+| `https://vision.edgebot.vip`（经过网关，带 `X-Forwarded-Proto`） | `https://vision.edgebot.vip/ai/ped.live.mp4`（同域名，避免混合内容，见 6.14） |
+| `http://141.164.45.82:8090`（直连） | `http://141.164.45.82/ai/ped.live.mp4`（80 端口，经网关转给 ZLM） |
+
+网关只开放 ZLM 的播放路径，管理接口 `/index/api/*`（webrtc 除外）不对外。
+
+**DNS 和端口**
+
+- Cloudflare 上 `@`、`www`、`qt`、`scada`、`vision`、`medlens` 都是 A 记录，指向服务器 IP，**全部灰色云朵（DNS only）**。原因：直连端口对外开放，IP 本来就公开，Cloudflare 隐藏 IP 的作用没有意义；灰色云朵的 WebSocket 没有 100 秒空闲断开的限制，证书续期也不受 Cloudflare 设置影响。代价是没有 CDN 加速和 DDoS 防护。
+- 直连端口保留：`:8090`（ai-vision）、`:8088`（SCADA）、`:8080`（Qt）、`:8010`（MedLens）都能直接打开。
+- ufw 放行：22、80/tcp、443/tcp+udp、8000/tcp+udp（WebRTC）、8090。Docker 端口映射（8080、8088、8010…）不受 ufw 控制。
+
+**常用操作**（在 `/opt/gateway`）
+
+```bash
+docker compose up -d
+docker compose logs -f caddy                                            # 证书申请情况
+docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile    # 原地改了 Caddyfile 后（见 6.16）
+```
+
+导航页 `site/index.html` 改了直接生效。回退：`docker compose down`，ai-vision 的 `.env` 改回 `ZLM_HTTP_PORT=80` 并删掉 `PLAY_HTTP_PORT`，再 `docker compose --profile demo up -d`。改动前的配置备份在服务器的 `/root/backup-gateway-20261031/`。
+
+### 8.5 部署前在本机验证镜像
 
 改了 `Dockerfile`、`docker-compose.yml`、`requirements.txt` 或前端依赖后，先在本机构建一次，确认没问题再上服务器。只构建，不启动，原生 ZLM 和控制服务照常运行（启动容器会和原生 ZLM 抢 80/554/1935/8000 端口）。
 
@@ -778,7 +863,7 @@ docker compose build app                 # 用 worker/models 里导出好的模�
 docker builder prune -f                  # 可选：清理构建缓存
 ```
 
-### 8.5 更新和日常操作（Docker）
+### 8.6 更新和日常操作（Docker）
 
 | 操作 | 命令（在 `/opt/ai-vision`） |
 |---|---|
@@ -794,7 +879,7 @@ docker builder prune -f                  # 可选：清理构建缓存
 - 页面上关闭了 AI 的设备不会自动启动 Worker，要在「设备管理」里打开。
 - 演示完建议修改服务器 root 密码，改用 SSH 密钥登录。
 
-### 8.6 磁盘占用
+### 8.7 磁盘占用
 
 | 位置 | 增长 | 上限 / 清理方式 |
 |---|---|---|
@@ -810,6 +895,244 @@ docker builder prune -f                  # 可选：清理构建缓存
 
 告警数量主要由规则的**冷却时间**决定：同一条规则的同一种告警，冷却时间内最多发一次。人多的画面上"逗留""人数超限"会持续触发，冷却时间从 20 秒改到 300 秒，录像量能少到原来的十几分之一。
 
+
+---
+
+## 9. 原理问答
+
+开发和部署过程中讨论过的原理问题，结合本项目的代码说明。画框的完整流程见 [docs/box-drawing.md](docs/box-drawing.md)，TensorRT、ReID 等扩展方向见 [docs/cv-tech-notes.md](docs/cv-tech-notes.md)。
+
+### 9.1 ZLMediaKit 的作用：转封装，不转码
+
+ZLM 是流媒体服务器，负责接收流和分发流：
+
+- **作为服务端接收推流**：`push_sample.sh` 让 ffmpeg 读取 mp4，用 `-re` 按实际速度以 RTSP 推到 `live/<name>`。ZLM 是服务端，ffmpeg 是推流客户端。
+- **主动拉流**：接真实摄像头时，API 调 ZLM 的 `addStreamProxy`，由 ZLM 去拉摄像头的 RTSP。
+- **协议转换**：一路流进来，可以用任何协议播放：HTTP-FLV、HTTP-fMP4、HLS（m3u8）、WebRTC、RTSP、RTMP。
+- **Hook 回调**：流上线、下线时通知控制服务，控制服务据此启停 Worker。
+
+ZLM **只转封装，不转码**：不解码画面，只把同一份 H.264 数据换一种包装，所以几十路也不怎么占 CPU。代价是原始流的编码必须是目标协议和浏览器能接受的，项目里遇到的几个问题都和这一点有关：
+
+| 问题 | 原因 |
+|---|---|
+| WebRTC 有画面没声音（6.3） | 音频是 AAC，WebRTC 只支持 Opus，ZLM 默认不转 |
+| WebRTC 卡住（6.6、修复 `c143985`） | 原始流带 B 帧，WebRTC 不支持 |
+| Windows Chrome 卡住（6.5） | 关键帧前没有 SPS/PPS |
+| 浏览器放不了 H.265 | 浏览器对 H.265 支持不完整，WebRTC 基本不支持 |
+
+浏览器不能直接播 RTSP，所以中间需要 ZLM 做协议转换和分发。ffmpeg 负责编码（读文件、转码、推流），ZLM 负责中转（一路进、多路出、按需生成 HLS、回调）。
+
+### 9.2 编码和封装
+
+| 层 | 是什么 | 例子 |
+|---|---|---|
+| **编码（codec）** | 画面怎么压缩成数据 | H.264、H.265、AV1、VP8/VP9、MJPEG；音频 AAC、Opus、G.711 |
+| **封装 / 传输协议** | 压缩后的数据怎么打包、怎么传输 | 文件封装：MP4、FLV、TS；网络协议：RTSP、RTMP、WebRTC、HLS |
+
+| 编码 | 特点 |
+|---|---|
+| **H.264** | 最主流，所有浏览器和硬件都支持 |
+| **H.265** | 同画质体积约为 H.264 的一半，监控摄像头很常用，但浏览器支持不完整 |
+| **AV1** | 免专利费，压缩率更高，编码很耗算力 |
+| **VP8 / VP9** | Google 的格式，WebRTC 和 YouTube 用 |
+| **MJPEG** | 每帧一张 JPEG，简单但体积大 |
+
+**改变画面内容必须先解码**：画检测框、缩放、加水印、打码，都要走“解码 → 改像素 → 重新编码”。压缩数据是“参考前一帧的差异”，没法直接在上面画。不解码只能做不改变画面的事：转封装、按关键帧剪切和拼接（告警录像就是这样拼的）、改时间戳、插入 SEI 附加数据。
+
+不想重新编码又要显示框，可以把检测结果单独发给浏览器叠加显示，也就是本项目的“原始 + 前端画框”模式（5.6）。
+
+### 9.3 容器、进程和一路流的链路
+
+| 容器 | 主进程 | 子进程（6 路时） |
+|---|---|---|
+| `ai-vision-zlm-1` | `MediaServer`（ZLMediaKit） | 无 |
+| `ai-vision-app-1` | `uvicorn api.main:app`（页面 + API + WebSocket） | 6 个 `worker.py`，每个带 1 个 `ffmpeg`（libx264 编码） |
+| `ai-vision-demo-1` | `streams.sh run` | 6 个推流 `ffmpeg`（`-c:v copy`，不转码） |
+
+```
+demo 容器                      zlm 容器                       app 容器
+ffmpeg 推流 ──RTSP──▶  live/ped  ──Hook: 流上线──▶  uvicorn (API)
+                            │                          │ 启动子进程
+                            └──────RTSP 拉流──────▶  worker.py ped
+                                                       │ 解码、检测、跟踪、画框
+                               ai/ped  ◀──RTSP 推流──  ffmpeg（libx264）
+                                 │
+                                 ▼
+                          浏览器（WebRTC / fMP4）
+```
+
+一路流对应：1 个推流 ffmpeg（demo 容器）+ 1 个 Worker + 1 个编码 ffmpeg（都在 app 容器）。Worker 放在 app 容器，是因为它的生命周期由 API 管理（9.8）；demo 只是模拟摄像头，接真实摄像头时没有 demo 容器。
+
+### 9.4 Worker 里各个库的分工
+
+| 环节 | 用的库 | 代码 |
+|---|---|---|
+| 拉流 + **解码** | PyAV（底层是 ffmpeg 的 libav） | `worker.py`：`container.decode()` → `frame.to_ndarray("bgr24")` |
+| 检测 | YOLO11 模型 + OpenVINO 推理；OpenCV 做缩放和 NMS | `detector.py` |
+| 跟踪 | 自己实现的 ByteTrack（numpy + scipy） | `tracker.py` |
+| 规则 | 自己实现（OpenCV 判断点是否在多边形内） | `rules.py` |
+| **画框** | OpenCV：`cv2.rectangle`、`putText`、`polylines` | `draw.py` |
+| **编码** + 推流 | ffmpeg 子进程（libx264），从 stdin 读原始 BGR 图像 | `worker.py`：`start_encoder()` |
+| 告警截图 | OpenCV 存 JPEG | `apiclient.py` |
+
+编码用 ffmpeg 子进程而不是 PyAV，是为了用 ffmpeg 的 `tee` 一次编码同时输出两路：推给 ZLM，以及写告警录像切片。
+
+### 9.5 检测的前后处理：letterbox 和 NMS
+
+**letterbox（前处理）**：模型输入固定 640×640。1920×1080 的画面先按比例缩到 640×360，上下各补 140 像素灰边（值 114）凑成正方形，形状不变形。检测结果要减去灰边偏移、除以缩放比例，换算回原图坐标。直接拉伸会把人压扁，准确率下降。
+
+**NMS 非极大值抑制（后处理）**：YOLO11 在 640 输入上输出 8400 个候选框，同一个人身上会有十几个重叠的框。先按置信度过滤，再：
+
+1. 按分数从高到低排序，保留最高的；
+2. 删掉和它 IoU 超过阈值（`iou` 参数）的框，视为同一目标的重复框；
+3. 对剩下的重复上述步骤。
+
+项目里按类别号给框加一个大偏移（类别 × 10000），一次 `cv2.dnn.NMSBoxes` 就完成“每个类别各自去重”，骑车的人和自行车不会互相删掉。YOLOv10、YOLO26 等端到端模型不需要 NMS，YOLO11 和 YOLOv8 需要。
+
+```
+1920×1080 → letterbox 640×640 → RGB、NCHW、/255 → YOLO（OpenVINO）→ 8400 个候选框
+→ 置信度过滤、类别过滤 → 换算回原图坐标 → NMS → 检测结果 → ByteTrack
+```
+
+### 9.6 跟踪：ByteTrack、卡尔曼滤波、匈牙利算法
+
+**ByteTrack** 是公开的开源算法（2021 年论文）。项目没有用官方库（依赖 PyTorch），在 `tracker.py` 里用 numpy + scipy 自己实现，约两百行。特点是**低分框也不扔**：第一轮用高分框匹配，第二轮用低分框去接被遮挡的目标，ID 不容易断。
+
+**卡尔曼滤波**估计每个目标的运动。状态是 `[cx, cy, w, h]` 加上各自的速度，按匀速运动预测（时间用秒，因为检测间隔不固定）。作用：
+
+| 作用 | 说明 |
+|---|---|
+| 用预测位置配对 | 检测每秒 5 次，0.2 秒内目标已经移动。框宽 40 像素、速度 200 像素/秒时，旧框和新框的 IoU 是 0，会配对失败；用预测框接近 1 |
+| 平滑抖动 | 把检测和预测按不确定度加权融合，框更稳，越线判断不会反复触发 |
+| 遮挡时继续推算 | 目标进入 LOST 状态后最多保留 2 秒，重新出现时能对上，ID 不变 |
+| 两次检测之间补帧 | `TrackView.box_at(t)` 按速度把框外推到每一帧（最多 0.5 秒），画出来的框平滑移动 |
+
+**匈牙利算法**解决“已有轨迹和新检测框谁对应谁”。`match()` 的步骤：
+
+```python
+iou = iou_matrix(预测框, 检测框)                  # 打分
+iou = np.where(same_class, iou, 0.0)             # 不同类别不能配
+rows, cols = linear_sum_assignment(-iou)          # 总 IoU 最大的一对一分配
+pairs = [... if iou[r, c] >= min_iou]             # 去掉重叠太小的配对
+```
+
+不用贪心（谁重叠最大先配谁），是因为目标靠近时贪心会串 ID。例如 A-1=0.6、A-2=0.5、B-1=0.5、B-2=0：贪心先配 A-1，B 就配不上了；匈牙利选总分更高的 A-2 + B-1 = 1.0。
+
+`ByteTracker.update()` 每帧调用三次：
+
+| 轮次 | 轨迹 | 检测框 | IoU 门槛 |
+|---|---|---|---|
+| 1 | 已确认 + 丢失中 | 高分框（≥ 0.4） | 0.2 |
+| 2 | 第 1 轮没配上的已确认轨迹 | 低分框（0.1~0.4） | 0.5（低分框可能是噪声，门槛更严） |
+| 3 | 待确认的新轨迹 | 第 1 轮剩下的高分框 | 0.3，连续命中 2 次才分配 ID |
+
+每帧都是“卡尔曼预测 → IoU 打分 → 匈牙利分配 → 卡尔曼更新”的循环。
+
+### 9.7 WebSocket 和 REST 的分工
+
+| 数据 | 方向 | 方式 |
+|---|---|---|
+| 配置规则、管理设备、查询告警列表 | 浏览器 → API | REST |
+| 新告警、录像生成、Worker 状态、流上下线、规则更新 | API → 浏览器 | WebSocket `/ws` |
+| 实时检测框（前端画框） | API → 浏览器 | WebSocket，只推给订阅了这路流的页面 |
+| 上报告警、心跳、录像，拉取规则 | Worker → API | REST（`/api/internal/*`） |
+
+规则：**客户端问、服务端答用 REST；服务端有事主动通知用 WebSocket。** 告警是服务端先知道的，REST 只能靠轮询，有延迟、有空请求，高频的检测框更做不了。WebSocket 的代价是有状态（要处理断线重连），而且消息不保证送达，所以它只负责通知，完整数据仍然用 REST 查数据库。
+
+Worker 上报用 REST，是因为每条告警都需要明确的成功或失败结果，失败了要重试。
+
+### 9.8 Worker 崩溃后的自动重启
+
+`api/manager.py` 里的 `supervise()` 每 3 秒检查一次所有 Worker：
+
+| 情况 | 判断 | 处理 |
+|---|---|---|
+| 崩溃 | `proc.poll()` 有退出码 | 进入 backoff 等待重启 |
+| 卡死 | 超过 20 秒没有心跳（`HEARTBEAT_TIMEOUT`） | 先 kill，再按崩溃处理 |
+
+重启间隔按 2、4、8、16、30 秒递增，最多 30 秒，避免持续故障时无限快速重启。稳定运行超过 60 秒后计数清零。
+
+```
+stopped ─spawn─▶ starting ─收到心跳─▶ running
+                    └── 退出 / 20 秒无心跳 ──▶ backoff ─到时间─▶ spawn
+```
+
+另一层保险是 `reconcile()` 对账：定期比较“应该运行”（流在线、开了 AI、没有被手动停止）和“实际在运行”，修正 Hook 丢失造成的状态不一致。Hook 反应快但可能丢，对账慢一点但一定能纠正。用户手动停止的 Worker（`manual_stop`）不会被拉起。
+
+### 9.9 推理引擎：OpenVINO、ONNX Runtime、TensorRT
+
+| | OpenVINO | ONNX Runtime | TensorRT |
+|---|---|---|---|
+| 出品方 | Intel | 微软 | NVIDIA |
+| 硬件 | Intel CPU、核显、NPU | CPU、NVIDIA/AMD GPU、苹果芯片、ARM 等 | 只有 NVIDIA GPU |
+| 模型格式 | IR（`.xml` + `.bin`），也能直接加载 ONNX | ONNX | 在目标显卡上编译成 `.engine`，换卡要重新编译 |
+| 定位 | Intel 硬件上最快 | 跨平台通用，可以把 OpenVINO、TensorRT 作为后端接入 | N 卡上最快 |
+| YOLO11n 推理 | 约 10~40 ms（CPU） | 视后端而定 | 约 1~3 ms（RTX） |
+
+ONNX 是模型格式，ONNX Runtime 是运行它的引擎。本项目的开发机和服务器都没有 NVIDIA 显卡，所以用 OpenVINO；MedLens 演示“同一个 ONNX 模型两种后端”，所以用 ONNX Runtime 和 OpenCV DNN。
+
+多路并发要限制线程：每个进程的推理引擎默认占满所有核，6 路时会互相抢（6.8），用 `--threads` 限制。
+
+迁移到 NVIDIA 显卡时，`detector.py` 的前后处理可以复用，推理换成 TensorRT，解码换成 NVDEC，编码换成 `h264_nvenc`。
+
+### 9.10 模型导出：`scripts/export_model.sh`
+
+把官方的 PyTorch 模型 `yolo11n.pt` 转成 OpenVINO IR，只需运行一次：
+
+```bash
+yolo export model=yolo11n.pt format=openvino imgsz=640 half=False
+# → worker/models/yolo11n_openvino_model/{yolo11n.xml, yolo11n.bin, metadata.yaml}
+```
+
+- 导出用单独的虚拟环境 `.venv-export`（CPU 版 torch + ultralytics），运行时环境和 Docker 镜像都不带 torch。
+- 项目没有用 ONNX 文件。OpenVINO 也能直接加载 `.onnx`，导出 `format=onnx` 后用 `--model` 指定即可；选 IR 是因为加载更快，也方便做 INT8 量化。
+- Docker 构建时，构建目录里有导出好的模型就直接用，没有才在中间阶段下载并导出。
+
+### 9.11 INT8 量化
+
+把 FP32 权重和中间结果映射到 8 位整数：`浮点值 ≈ 缩放系数 × (整数 - 零点)`。体积约为原来的 1/4，一次能算的数更多，还能用 VNNI、AMX 等专用指令。
+
+- **训练后量化（PTQ）**：权重直接统计范围；激活值需要用一批校准图片跑一遍统计范围。不用重新训练，最常用。
+- **量化感知训练（QAT）**：训练时模拟量化误差，精度损失更小，需要训练资源。
+
+```bash
+yolo export model=yolo11n.pt format=openvino imgsz=640 int8=True data=<校准数据集>.yaml
+```
+
+- 校准数据最好用自己摄像头的画面（200~300 帧，覆盖不同时段和光照）。
+- 检测头保持 FP32（混合精度），否则框会偏。
+- 前后处理不变，只换模型路径。量化后要对比检测结果，远处小目标最容易受影响。
+
+预期效果：Intel CPU 上通常快 1.5~3 倍，精度下降 1~2 个 mAP 点。具体取决于 CPU 指令：AMX > AVX-512 VNNI > AVX-VNNI（12、13 代酷睿）> 都没有（收益很小）。用 `lscpu | grep -oE 'avx_vnni|avx512_vnni|amx_int8'` 查看。yolo11n 计算量小，提速比大模型低；而且只加速推理，解码和编码不变。用 `benchmark_app -m <模型>.xml -d CPU -hint latency` 对比纯推理速度。
+
+### 9.12 在宿主机查看容器进程和资源
+
+```bash
+docker top ai-vision-app-1 -o pid,ppid,pcpu,rss,args   # 容器内的进程，不需要容器里有 ps
+docker compose top                                      # compose 目录下所有服务的进程
+docker stats --no-stream                                # 各容器 CPU、内存、网络、进程数
+docker exec -it ai-vision-app-1 bash                    # 进入容器
+ps aux | grep worker.py                                 # 容器进程也是宿主机进程，宿主机能直接看到
+systemd-cgtop                                           # 按容器汇总的资源占用
+```
+
+`docker stats` 的 CPU% 以一个核为 100%，8 核最高 800%。Worker 的日志在 `data/logs/worker_<流名>.log`，不在 `docker logs` 里。
+
+### 9.13 远程访问时视频刷不出来
+
+在服务器上检查 Worker 状态和 ZLM 的流列表都正常，CPU 和内存也宽裕，但浏览器里视频一直加载不出来，通常是网络问题：
+
+```bash
+ping -c 30 <服务器IP>                                    # 丢包率和延迟
+curl -o /dev/null -w "%{time_connect} %{time_total}\n" http://<服务器IP>:8090/api/system   # 多测几次，看是否时快时慢
+BASE=http://<服务器IP>:8090/ CASES=ai:webrtc,ai:fmp4 node web/e2e/playtest.mjs /usr/bin/google-chrome /tmp/play 15
+```
+
+最后一条用无头 Chrome 打开监控大屏，输出每 5 秒解码的帧数：稳定在帧率 × 5 表示流畅，0 表示没有画面。
+
+2026-11 实测：从本地网络到服务器延迟 183 ms、丢包 17%（到国内的阿里云 DNS 同样丢包 17%，说明本地网络本身在丢包），而服务器本机访问只要 0.02 秒。fMP4 走 TCP，丢包时速度会掉得很低；WebRTC 走 UDP，丢包会花屏或冻结；大屏同时开多路，问题更明显。另外，页面上关闭了 AI 的设备没有 `ai/` 流，选“AI 画面”时那一格不会有画面。
+
+处理：换一个网络（比如手机热点）确认；网络差时少开几路，试试 fMP4 和 WebRTC 哪个更稳；长期面向国内用户，用香港、CN2 GIA 线路或国内云服务器。停掉服务器上的其他容器对此没有帮助。
 
 ---
 
