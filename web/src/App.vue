@@ -30,6 +30,7 @@ import { ElNotification } from 'element-plus'
 import { Bell, EditPen, Monitor, Promotion, VideoCamera } from '@element-plus/icons-vue'
 import { connectWS, loadDevices, loadRecentAlarms, store } from './store'
 import { ALARM_TYPES } from './api'
+import { startIdleWatch } from './idle'
 
 const route = useRoute()
 const router = useRouter()
@@ -51,6 +52,7 @@ watch(() => store.lastAlarm, la => {
 watch(() => route.path, p => { if (p === '/alarms') unread.value = 0 })
 
 onMounted(() => {
+  startIdleWatch()
   connectWS()
   loadDevices().catch(() => {})
   loadRecentAlarms().catch(() => {})

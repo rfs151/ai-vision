@@ -5,14 +5,19 @@
 <template>
   <div class="player">
     <video ref="video" muted autoplay playsinline :style="{ objectFit: fit }" @loadedmetadata="onMeta" />
-    <TrackOverlay v-if="overlay" :stream="overlay.stream" :rules="overlay.rules" :video="video" :delay="delay" />
-    <div v-if="status !== 'playing'" class="status">{{ statusText }}</div>
+    <TrackOverlay v-if="overlay && !videoGate.paused" :stream="overlay.stream" :rules="overlay.rules" :video="video" :delay="delay" />
+    <div v-if="videoGate.paused" class="status paused" @click="resumeVideo">
+      <div>⏸ {{ videoGate.reason === 'hidden' ? '页面在后台，已暂停播放' : '长时间无操作，已暂停播放' }}</div>
+      <div class="hint">为节省流量 · 点击继续</div>
+    </div>
+    <div v-else-if="status !== 'playing'" class="status">{{ statusText }}</div>
   </div>
 </template>
 
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import TrackOverlay from './TrackOverlay.vue'
+import { resumeVideo, videoGate } from '../idle'
 
 const props = defineProps({
   urls: { type: Object, required: true },    // { webrtc, fmp4, ... } from /api/devices play.*
@@ -64,6 +69,7 @@ function retry(reason) {
 
 async function start() {
   stop()
+  if (videoGate.paused) return            // 省流量暂停中：不连接，恢复时由下面的 watch 重新 start
   status.value = 'connecting'
   const v = video.value
   v.onplaying = () => { status.value = 'playing' }
@@ -77,6 +83,7 @@ async function start() {
   }, 1000)
   if (props.mode === 'webrtc') {
     try { await loadRTCClient() } catch { return retry() }
+    if (!alive || videoGate.paused) return  // 等脚本加载期间被暂停/卸载
     const Z = window.ZLMRTCClient
     rtc = new Z.Endpoint({
       element: v, debug: false, zlmsdpUrl: props.urls.webrtc, simulcast: false,
@@ -139,11 +146,17 @@ watch([() => props.mode, () => props.urls.webrtc, () => props.urls.fmp4], (n, o)
   start()
 })
 
+// 省流量：暂停时断开连接（流量归零），恢复时重连
+watch(() => videoGate.paused, p => {
+  if (!alive) return
+  if (p) { stop(); status.value = 'connecting' } else start()
+})
+
 // Background tabs: Chrome suspends video-only media (our ai/ streams have no audio) and
 // throttles timers, so an HTTP live stream comes back far behind live or frozen.
 // When the tab is visible again, reconnect to jump straight to live. WebRTC keeps running.
 function onVisibility() {
-  if (document.visibilityState === 'visible' && props.mode === 'fmp4' && alive) {
+  if (document.visibilityState === 'visible' && props.mode === 'fmp4' && alive && !videoGate.paused) {
     console.info('[player] restart: tab visible again, jump to live')
     start()
   }
@@ -164,4 +177,6 @@ onBeforeUnmount(() => {
 .player { position: relative; width: 100%; height: 100%; background: #000; overflow: hidden; }
 video { width: 100%; height: 100%; display: block; }
 .status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #888; font-size: 13px; }
+.status.paused { flex-direction: column; gap: 4px; color: #ccc; background: rgb(0 0 0 / .75); cursor: pointer; z-index: 2; }
+.status.paused .hint { color: #888; font-size: 12px; }
 </style>
