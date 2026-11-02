@@ -8,7 +8,7 @@
 #
 #   ./ctl.sh start | stop | restart | status | logs [api|streams|zlm]
 #
-# 公网（国内 VPS frp 转发）：http://121.41.221.119:8090/
+# 公网（国内 VPS frp 转发）：http://47.117.29.74:8090/
 set -euo pipefail
 cd "$(dirname "$0")"
 UNITS=(zlm ai-vision-api ai-vision-streams)
@@ -28,7 +28,7 @@ for d in json.load(sys.stdin):
         s = w.get("stats") or {}
         print("  %-8s 在线  worker=%s  %sfps  推理 %sms" % (d["stream"], w.get("state"), s.get("out_fps", "-"), s.get("infer_ms", "-")))
 ' 2>/dev/null || true
-    echo "公网地址 http://121.41.221.119:8090/" ;;
+    echo "公网地址 http://47.117.29.74:8090/" ;;
   logs)
     case ${2:-api} in
       zlm)     journalctl -u zlm -f -n 100 ;;
