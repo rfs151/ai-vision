@@ -307,9 +307,10 @@ scripts/build_web.sh                     # 生成 web/dist
 scripts/run_api.sh                       # 管理页面 http://127.0.0.1:8090/，接口文档 /docs
 
 # 3. 推测试视频：API 会自动注册设备并启动 Worker
-scripts/get_samples.sh                   # 下载并转码 6 段测试视频到 data/samples/
+scripts/get_samples.sh                   # 下载并转码 6 段测试视频到 data/samples/，再用 store 生成 still（大部分时间静止，演示跳过推理）
 scripts/streams.sh start                 # 按 scripts/streams.conf 一次推 2 路（默认 ped、street，其余在 conf 里取消注释即可） → live/<name>，输出 ai/<name>
 scripts/streams.sh status                # 查看；stop / restart 后面可以跟流名，只操作其中几路
+# 也可以在页面上选：设备管理 -> 测试推流，每路一个开关（存到 data/streams.enabled，优先于 conf 里的注释）
 # 只推一路：scripts/push_sample.sh data/samples/pedestrians.mp4 ped
 
 # 4. 下发规则：在页面「规则配置」里直接画；也可以调接口（Worker 不需要重启，5 秒内生效）
@@ -345,7 +346,7 @@ Worker 参数：`--det-fps 5`（每秒检测帧数）、`--conf 0.4`（跟踪用
 
 转码统一为：宽度不超过 960、帧率不超过 15fps、无 B 帧、每个关键帧带 SPS/PPS、限制关键帧大小（`-crf 23 -maxrate 1200k -bufsize 300k -g 2*fps -bf 0 -x264-params repeat-headers=1`，原因见第 6 节）。
 
-`scripts/streams.sh`：每一路单独一个进程组，推流断了（比如 ZLM 重启）2 秒后自动重推；PID 文件在 `data/run/`，日志在 `data/logs/push_<name>.log`；`run` 模式在前台运行（给 Docker 用）。新推上来的 `live/*` 流由 Hook 或者每 3 秒一次的对账循环自动登记成设备，默认开启 AI。
+`scripts/streams.sh`：每一路单独一个进程组，推流断了（比如 ZLM 重启）2 秒后自动重推；PID 文件在 `data/run/`，日志在 `data/logs/push_<name>.log`；`run` 模式在前台运行（systemd 服务和 Docker 用），每 5 秒按当前选择（`data/streams.enabled`，没有这个文件时看 conf 里的注释）启动或停止各路推流，所以页面上的开关 5 秒内生效。新推上来的 `live/*` 流由 Hook 或者每 3 秒一次的对账循环自动登记成设备，默认开启 AI。
 
 ---
 
@@ -771,7 +772,7 @@ python3 scripts/bench.py --api http://127.0.0.1:18090
 | 一键启停、状态 | `./ctl.sh start|stop|restart|status|logs [api|streams|zlm]` |
 | ZLM 启停、日志 | `systemctl restart zlm`，`journalctl -u zlm -f`，`/var/log/zlm/` |
 | 控制服务 | systemd 服务 `ai-vision-api`（`deploy/systemd/`，运行 `scripts/run_api.sh`；Worker 由它启动和管理） |
-| 测试推流 | systemd 服务 `ai-vision-streams`（`streams.sh run`）；临时操作单路：`scripts/streams.sh start|stop|restart|status [流名...]` |
+| 测试推流 | 页面：设备管理 -> 测试推流；systemd 服务 `ai-vision-streams`（`streams.sh run`）；临时操作单路：`scripts/streams.sh start|stop|restart|status [流名...]` |
 | 日志 | `data/logs/worker_<流名>.log`、`data/logs/push_<流名>.log` |
 | 数据 | `data/ai-vision.db`（SQLite）、`data/alarms/`（截图）、`data/clips/`（录像） |
 | 前端改动后 | `scripts/build_web.sh`，刷新页面即可 |

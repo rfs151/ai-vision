@@ -3,6 +3,7 @@
     <div class="toolbar">
       <el-button type="primary" :icon="Plus" @click="openEdit()">添加设备</el-button>
       <el-button :icon="Refresh" @click="refresh">刷新</el-button>
+      <el-button :icon="VideoCamera" @click="openPush">测试推流</el-button>
       <span class="muted">推流到 live/&lt;名称&gt; 的流会被自动注册为设备；摄像头请填写拉流地址</span>
     </div>
 
@@ -57,6 +58,27 @@
       </el-table-column>
     </el-table>
 
+    <el-dialog v-model="push.visible" title="测试推流" width="560px" @closed="stopPoll">
+      <p class="muted" style="margin-top: 0">循环推送示例视频，模拟摄像头。打开后约 5 秒开始推流，并自动登记为设备；关闭后停止推流，设备变为离线，监控大屏不再显示。</p>
+      <el-table :data="push.list" v-loading="push.loading" size="small">
+        <el-table-column prop="name" label="流名称" width="110" />
+        <el-table-column prop="file" label="视频文件" min-width="200" show-overflow-tooltip />
+        <el-table-column label="状态" width="100">
+          <template #default="{ row }">
+            <el-tag v-if="row.pushing" type="success" size="small">推流中</el-tag>
+            <el-tag v-else-if="row.enabled" type="warning" size="small">启动中</el-tag>
+            <el-tag v-else type="info" size="small">未推流</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="推流" width="80">
+          <template #default="{ row }">
+            <el-switch :model-value="row.enabled" size="small" :loading="push.busy === row.name"
+                       @change="v => togglePush(row, v)" />
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
+
     <el-dialog v-model="edit.visible" :title="edit.id ? '编辑设备' : '添加设备'" width="520px">
       <el-form :model="edit.form" label-width="96px">
         <el-form-item label="名称" required><el-input v-model="edit.form.name" /></el-form-item>
@@ -87,15 +109,17 @@
 </template>
 
 <script setup>
-import { reactive, ref } from 'vue'
+import { onBeforeUnmount, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { ArrowDown, Plus, Refresh } from '@element-plus/icons-vue'
+import { ArrowDown, Plus, Refresh, VideoCamera } from '@element-plus/icons-vue'
 import { api } from '../api'
 import { loadDevices, store } from '../store'
 
 const CLASSES = ['person', 'bicycle', 'car', 'motorcycle', 'bus', 'truck', 'dog', 'cat', 'backpack', 'handbag', 'suitcase']
 const loading = ref(false)
 const edit = reactive({ visible: false, saving: false, id: null, form: {} })
+const push = reactive({ visible: false, loading: false, busy: '', list: [] })
+let pollTimer = null
 
 const worker = row => store.workers[row.stream]
 const stateTag = s => ({ running: 'success', starting: 'warning', backoff: 'danger', stopped: 'info' }[s])
@@ -146,6 +170,32 @@ async function worker_(row, action) {
     ElMessage.error(e.message)
   }
 }
+
+// Test streams: the pusher applies a change within ~5 s, so poll while the dialog is open
+async function loadPush() {
+  try { push.list = await api.testStreams() } catch (e) { ElMessage.error(e.message) }
+}
+
+async function openPush() {
+  push.visible = true
+  push.loading = true
+  await loadPush()
+  push.loading = false
+  stopPoll()
+  pollTimer = setInterval(() => { loadPush(); loadDevices().catch(() => {}) }, 2000)
+}
+
+function stopPoll() {
+  clearInterval(pollTimer)
+  pollTimer = null
+}
+
+async function togglePush(row, v) {
+  push.busy = row.name
+  try { push.list = await api.setTestStream(row.name, v) } catch (e) { ElMessage.error(e.message) } finally { push.busy = '' }
+}
+
+onBeforeUnmount(stopPoll)
 
 async function remove(row) {
   try { await api.deleteDevice(row.id); ElMessage.success('已删除'); await refresh() } catch (e) { ElMessage.error(e.message) }

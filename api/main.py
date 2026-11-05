@@ -19,7 +19,7 @@ from api.manager import manager
 from api.models import Device
 from api.notify import notifier
 from api import retention, tracks
-from api.routers import alarms, devices, hooks, internal, notify
+from api.routers import alarms, devices, hooks, internal, notify, streams
 from api.zlm import ZLM
 
 log = logging.getLogger("main")
@@ -127,6 +127,7 @@ app.include_router(alarms.router)
 app.include_router(hooks.router)
 app.include_router(internal.router)
 app.include_router(notify.router)
+app.include_router(streams.router)
 app.mount("/media", StaticFiles(directory=settings.data_dir), name="media")
 
 

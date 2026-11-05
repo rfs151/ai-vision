@@ -270,6 +270,30 @@ async def _deliver(tracks, msg):
     await asyncio.sleep(0.05)
 
 
+def test_test_streams_toggle_writes_selection(client, monkeypatch, tmp_path):
+    from api.config import settings
+    conf = tmp_path / "streams.conf"
+    conf.write_text("# Test streams: <stream name> <video file>\n"
+                    "ped     data/samples/pedestrians.mp4\n"
+                    "#cars   data/samples/cars.mp4\n", encoding="utf-8")
+    sel = tmp_path / "streams.enabled"
+    monkeypatch.setattr(settings, "streams_conf", conf)
+    monkeypatch.setattr(settings, "streams_selection", sel)
+    client.app.state.zlm.online = {("live", "ped")}
+
+    # No choice made yet: the conf comments decide
+    got = client.get("/api/test-streams").json()
+    assert got == [{"name": "ped", "file": "data/samples/pedestrians.mp4", "enabled": True, "pushing": True},
+                   {"name": "cars", "file": "data/samples/cars.mp4", "enabled": False, "pushing": False}]
+
+    got = client.put("/api/test-streams/cars", json={"enabled": True}).json()
+    assert [s["enabled"] for s in got] == [True, True]
+    got = client.put("/api/test-streams/ped", json={"enabled": False}).json()
+    assert [s["enabled"] for s in got] == [False, True]
+    assert sel.read_text().split() == ["cars"]          # what streams.sh reads
+    assert client.put("/api/test-streams/nope", json={"enabled": True}).status_code == 404
+
+
 def test_video_features_saved_served_and_pushed_to_worker(client, monkeypatch):
     """PUT /video: stored, returned with the device and to the worker, and a reload command sent
     over UDP to the address the worker's track boxes come from."""

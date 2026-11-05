@@ -8,6 +8,11 @@
 #   scripts/streams.sh run [name...]      start, then stay in the foreground; Ctrl+C / SIGTERM stops
 #                                         them all (for containers: docker compose --profile demo)
 #
+# Which streams are on: every line of the conf is a stream, a commented-out line ("#cars ...") is
+# off. The web UI (设备管理 -> 测试推流) writes its choice to data/streams.enabled (one name per
+# line); when that file exists it wins over the comments. "run" without names re-reads both every
+# 5 s and starts / stops pushes to match, so a change in the UI applies within 5 s.
+#
 # Every stream runs in its own process group with a retry loop (ZLM restart -> push again in 2 s).
 # PID files: data/run/push_<name>.pid   logs: data/logs/push_<name>.log (emptied on start and
 # whenever it passes 1 MB, e.g. while ZLM is down and the loop retries every 2 s)
@@ -15,15 +20,39 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 CONF=${CONF:-scripts/streams.conf}
+SEL=${SEL:-data/streams.enabled}
 RUN=data/run
 LOGS=data/logs
 mkdir -p "$RUN" "$LOGS"
 
-# "name file" pairs from the conf, optionally filtered by the names given on the command line
+# All "name file on|off" lines of the conf, commented-out ones included (they are "off")
+catalog() {
+  sed -nE 's/^\s*(#?)\s*([A-Za-z0-9_-]+)\s+(\S+\.(mp4|mkv|mov|flv|ts))\s*$/\2 \3 \1/p' "$CONF" |
+    while read -r name file off; do echo "$name $file $([ -n "$off" ] && echo off || echo on)"; done
+}
+
+is_enabled() {   # from data/streams.enabled when it exists, else the conf comments
+  if [ -f "$SEL" ]; then grep -qxF "$1" "$SEL"; else [ "$2" = on ]; fi
+}
+
+# "name file" pairs: the given names (any line of the conf), or all enabled streams when none given
 entries() {
   local want=" $* "
-  grep -vE '^\s*(#|$)' "$CONF" | while read -r name file _; do
-    if [ $# -eq 0 ] || [[ "$want" == *" $name "* ]]; then echo "$name $file"; fi
+  catalog | while read -r name file state; do
+    if [ $# -gt 0 ]; then
+      if [[ "$want" == *" $name "* ]]; then echo "$name $file"; fi
+    elif is_enabled "$name" "$state"; then echo "$name $file"; fi
+  done
+}
+
+# Make the running pushes match the selection (run mode, every 5 s)
+sync_all() {
+  catalog | while read -r name file state; do
+    if is_enabled "$name" "$state"; then
+      [ -n "$(pid_of "$name")" ] || start_one "$name" "$file"
+    elif [ -n "$(pid_of "$name")" ]; then
+      stop_one "$name"
+    fi
   done
 }
 
@@ -73,13 +102,17 @@ case $cmd in
   restart) entries "$@" | while read -r n f; do stop_one "$n"; start_one "$n" "$f"; done ;;
   run)
     names=("$@")
-    entries "${names[@]}" | while read -r n f; do start_one "$n" "$f"; done
-    trap 'entries "${names[@]}" | while read -r n f; do stop_one "$n"; done; exit 0' TERM INT
-    while true; do sleep 5 & wait $!; done ;;
+    # stop everything this script may have started (all conf lines), not only what is enabled now
+    trap 'catalog | while read -r n f _; do [ -z "$(pid_of "$n")" ] || stop_one "$n"; done; exit 0' TERM INT
+    if [ ${#names[@]} -gt 0 ]; then          # fixed list from the command line
+      entries "${names[@]}" | while read -r n f; do start_one "$n" "$f"; done
+      while true; do sleep 5 & wait $!; done
+    fi
+    while true; do sync_all; sleep 5 & wait $!; done ;;
   status)
-    printf "  %-8s %-8s %s\n" NAME PID FILE
-    entries | while read -r n f; do
-      printf "  %-8s %-8s %s\n" "$n" "$(pid_of "$n" | grep . || echo -)" "$f"
+    printf "  %-8s %-4s %-8s %s\n" NAME ON PID FILE
+    catalog | while read -r n f st; do
+      printf "  %-8s %-4s %-8s %s\n" "$n" "$(is_enabled "$n" "$st" && echo yes || echo -)" "$(pid_of "$n" | grep . || echo -)" "$f"
     done ;;
-  *) sed -n '2,12p' "$0"; exit 1 ;;
+  *) sed -n '2,18p' "$0"; exit 1 ;;
 esac

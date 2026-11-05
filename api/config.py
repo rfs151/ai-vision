@@ -44,6 +44,10 @@ class Settings:
     # Alarm snapshots + clips: delete files older than N days, and the oldest beyond N GB (0 = off)
     media_keep_days = float(os.getenv("MEDIA_KEEP_DAYS", "7"))
     media_max_gb = float(os.getenv("MEDIA_MAX_GB", "5"))
+    # Test streams (scripts/streams.sh): the list, and the on/off choice made in the UI. The choice
+    # lives under data/ so the demo container (Docker) sees it too.
+    streams_conf = Path(os.getenv("STREAMS_CONF", ROOT / "scripts" / "streams.conf"))
+    streams_selection = Path(os.getenv("STREAMS_SELECTION", data_dir / "streams.enabled"))
 
 
 settings = Settings()

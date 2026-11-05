@@ -56,3 +56,17 @@ convert vehicles-2.mp4                   cars          # highway traffic, ~13 ve
 convert people-detection.mp4             people        # people indoors
 convert worker-zone-detection.mp4        worker        # factory workers (danger zone)
 convert store-aisle-detection.mp4        store         # store aisle (dwell)
+
+# still: a mostly static camera, to show 画面静止时跳过推理 (skip_static). 20 s of the store aisle
+# frozen while it is still empty (light sensor noise, like a real camera), then the first 30 s of
+# the real clip (people walk in). Built from store.mp4, so it needs no download.
+if [ ! -s still.mp4 ] || [ -n "${FORCE:-}" ]; then
+  enc=(-c:v libx264 -preset fast -crf 23 -maxrate 1200k -bufsize 300k -pix_fmt yuv420p -r 15 -g 30 -bf 0
+       -x264-params repeat-headers=1)
+  ffmpeg -v error -y -i store.mp4 -an -filter_complex \
+    "[0:v]trim=end_frame=1,loop=299:1:0,setpts=N/15/TB,noise=alls=3:allf=t[a];
+     [0:v]trim=duration=30,setpts=PTS-STARTPTS[b];[a][b]concat=n=2:v=1:a=0" \
+    "${enc[@]}" still.tmp.mp4
+  mv -f still.tmp.mp4 still.mp4
+fi
+echo "data/samples/still.mp4  $(ffprobe -v error -select_streams v -show_entries stream=width,height:format=duration -of csv=p=0 still.mp4 | paste -sd' ')"

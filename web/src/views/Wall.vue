@@ -34,7 +34,7 @@
                 <span class="dot" :class="{ on: slot.online }" />{{ slot.name }}
               </span>
               <el-select v-model="picked[i]" size="small" class="pick" placeholder="选择设备">
-                <el-option v-for="d in store.devices" :key="d.id" :label="d.name" :value="d.id" />
+                <el-option v-for="d in onlineDevices" :key="d.id" :label="d.name" :value="d.id" />
               </el-select>
             </div>
             <div v-if="workerOf(slot)" class="overlay bottom">
@@ -48,7 +48,7 @@
           </template>
           <div v-else class="empty">
             <el-select v-model="picked[i]" size="small" placeholder="选择设备" style="width: 160px">
-              <el-option v-for="d in store.devices" :key="d.id" :label="d.name" :value="d.id" />
+              <el-option v-for="d in onlineDevices" :key="d.id" :label="d.name" :value="d.id" />
             </el-select>
           </div>
         </div>
@@ -99,8 +99,10 @@ watch([layout, source, mode, picked], () => {
 // Overlay boxes are aligned via the WebRTC jitter buffer; fMP4 can't be aligned precisely
 watch(mode, m => { if (m !== 'webrtc' && source.value === 'overlay') source.value = 'source' }, { immediate: true })
 
-const byId = computed(() => Object.fromEntries(store.devices.map(d => [d.id, d])))
-const onlineCount = computed(() => store.devices.filter(d => d.online).length)
+// Only devices with a live stream are offered and shown (a stopped test stream disappears)
+const onlineDevices = computed(() => store.devices.filter(d => d.online))
+const byId = computed(() => Object.fromEntries(onlineDevices.value.map(d => [d.id, d])))
+const onlineCount = computed(() => onlineDevices.value.length)
 
 // Fill slots: explicitly picked devices first, then online devices not shown yet
 const slots = computed(() => {
@@ -110,7 +112,7 @@ const slots = computed(() => {
     const d = byId.value[picked[i]]
     if (d) { out[i] = d; used.add(d.id) }
   }
-  const rest = [...store.devices].sort((a, b) => b.online - a.online).filter(d => !used.has(d.id))
+  const rest = onlineDevices.value.filter(d => !used.has(d.id))
   for (let i = 0; i < layout.value; i++) if (!out[i] && rest.length) out[i] = rest.shift()
   return out
 })
