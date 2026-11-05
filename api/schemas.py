@@ -34,6 +34,7 @@ class VideoFeatures(BaseModel):
     """Per-device video features (worker/video.py). All off = what the worker always did."""
     dyn_gop: bool = False       # 动态关键帧: 10 s interval + keyframe on viewer / activity / alarm
     roi: bool = False           # ROI 编码: target boxes at a lower QP, background pays under the cap
+    skip_static: bool = False   # 画面静止时跳过推理: no YOLO while the picture does not change
     compare: bool = False       # 对比模式: also push a baseline encode (all features off) to ai_ref/
 
 

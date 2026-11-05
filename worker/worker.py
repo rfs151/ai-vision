@@ -30,6 +30,7 @@ from apiclient import ApiClient
 from clip import ClipRecorder
 from detector import COCO_NAMES, YoloDetector
 from encoder import Encoder
+from motion import MotionGate, motion_fraction
 from rules import RuleEngine
 from tracker import ByteTracker, views
 from video import VideoCtl
@@ -63,7 +64,9 @@ class AnalysisThread(threading.Thread):
         self.resolution = None
         self.connected = False
         self.encoder = None             # Encoder of the current connection (None with --encoder ffmpeg)
-        self.video = VideoCtl()         # video features (dynamic keyframes, compare stream)
+        self.video = VideoCtl()         # video features (dynamic keyframes, ROI, compare stream)
+        self.gate = MotionGate()        # skip_static: skip inference while the picture is still
+        self.last_dets = None           # detections of the last real inference (reused when skipping)
         self._cpu = (time.monotonic(), time.process_time())
         # Published state, read by the drawing thread (replaced atomically, never mutated)
         self.track_views = []
@@ -95,6 +98,7 @@ class AnalysisThread(threading.Thread):
             "tracks": len(self.track_views), "cpu": cpu_pct,
             **(self.encoder.stats() if self.encoder else {}),
             **self.video.stats(),
+            **self.gate.stats(),
             "zones": {z.id: z.count for z in e.zones} if e else {},
             "lines": {l.id: {"in": l.n_in, "out": l.n_out} for l in e.lines} if e else {},
         }
@@ -115,6 +119,8 @@ class AnalysisThread(threading.Thread):
             if self._reset:
                 self._reset = False
                 self.tracker.reset()
+                self.gate.reset()
+                self.last_dets = None
                 if self.engine:
                     self.engine.reset()
                 self.track_views = []
@@ -153,9 +159,13 @@ class AnalysisThread(threading.Thread):
             h, w = frame.shape[:2]
             self.engine = RuleEngine(self.rules_cfg, w, h)
 
-        t1 = time.perf_counter()
-        dets = self.detector.detect(frame)
-        self.infer_ms = (time.perf_counter() - t1) * 1000
+        if self.gate.skip(self.video.on("skip_static"), self.last_dets is not None):
+            dets = self.last_dets           # picture still: same detections, tracker/rules carry on
+        else:
+            t1 = time.perf_counter()
+            dets = self.detector.detect(frame)
+            self.infer_ms = (time.perf_counter() - t1) * 1000
+            self.last_dets = dets
         tracks = self.tracker.update(dets, t)
         events = self.engine.update(tracks, t, self.tracker.removed) if self.engine else []
         self.track_views = views(tracks)
@@ -249,6 +259,8 @@ def run_once(args, an):
     # comes out ~16 frames late (measured 1.39 s at 10 fps, vs 1.5 ms with slice threading). That
     # delayed the AI stream, the alarms and the browser overlay boxes by the same 1.4 s.
     vstream.thread_type = "SLICE"
+    # Motion vectors from the camera's own encoding (skip_static); costs about nothing
+    vstream.codec_context.options = {"flags2": "+export_mvs"}
     fps = float(vstream.average_rate or vstream.guessed_rate or 25)
     fps = fps if 1 <= fps <= 60 else 25
     encoder = None
@@ -259,6 +271,7 @@ def run_once(args, an):
             if STOP.is_set():
                 return
             img = frame.to_ndarray(format="bgr24")
+            an.gate.add(motion_fraction(frame))     # 0.06 ms; also shown while skip_static is off
             t = frame.time if frame.time is not None else time.monotonic() - wall0
             if encoder is None:
                 h, w = img.shape[:2]

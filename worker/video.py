@@ -5,6 +5,7 @@
            targets appear after a quiet spell and when an alarm fires.
   roi      ROI 编码: the target boxes (+20 % margin) are encoded at a lower QP; under the bitrate
            cap the background pays for it. See encoder.py.
+  skip_static 画面静止时跳过推理: see motion.py (applied in worker.AnalysisThread).
   compare  对比模式: a second encode of the same picture with every feature off (the baseline),
            pushed to ai_ref/<stream>, so the UI can play both side by side. Costs one more encode,
            plus decoding both outputs to measure their quality (QualityProbe).

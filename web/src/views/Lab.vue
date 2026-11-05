@@ -39,7 +39,23 @@
           </div>
           <div class="fhint">看：<b>目标区域 PSNR</b> 上升、<b>背景 PSNR</b> 下降（对比模式下才测量，单位 dB，越高越接近原画面）。</div>
         </div>
-        <div class="feature more muted">跳过静止画面推理等功能：后续加入</div>
+        <div class="feature">
+          <div class="frow">
+            <span class="fname">画面静止时跳过推理</span>
+            <el-switch :model-value="feat('skip_static')" :loading="saving === 'skip_static'" @change="v => setFeature('skip_static', v)" />
+          </div>
+          <div class="fdesc">
+            直接用摄像头编码时算好的运动矢量判断画面有没有变化（不做像素计算，每帧约 0.06 ms）。
+            两次检测之间画面变化不到 1% 就不跑 YOLO，沿用上一次的检测结果，跟踪和规则照常运行；最长 2 秒必跑一次。不影响画面。
+          </div>
+          <div class="fhint">看：<b>每秒推理次数</b>和 <b>Worker CPU</b> 下降；画面有人走动时推理次数应回到每秒 5 次。</div>
+          <div class="metrics">
+            <div><span>画面运动</span><b>{{ fmt(stats.motion_pct, 1) }}</b> %</div>
+            <div><span>每秒推理</span><b>{{ fmt(stats.infer_per_s, 1) }}</b> 次</div>
+            <div><span>跳过</span><b>{{ fmt(stats.skip_pct, 0) }}</b> %</div>
+            <div><span>Worker CPU</span><b>{{ fmt(stats.cpu, 0) }}</b> %</div>
+          </div>
+        </div>
         <el-divider />
         <div class="feature">
           <div class="frow">
@@ -88,6 +104,8 @@
                      :series="chartSeries('psnr_roi')" :markers="markers" />
           <LineChart v-if="dev.video.compare" title="背景 PSNR（dB）" unit="dB" :digits="1" :zero="false"
                      :series="chartSeries('psnr_bg')" :markers="markers" />
+          <LineChart title="每秒推理次数" unit="次/秒" :digits="1" :series="mainSeries('infer_per_s', '推理')" :markers="markers" />
+          <LineChart title="Worker CPU" unit="%" :series="mainSeries('cpu', 'CPU')" :markers="markers" />
         </div>
         <div class="note muted">
           数值为最近 20 秒的滑动平均，切换开关后约 20 秒曲线才完全反映新状态。两路画面和码率控制完全相同（CRF 23，码率上限 1200 kbps），只有功能开关不同。
@@ -108,7 +126,7 @@ import { api } from '../api'
 
 const ON = '#3987e5'      // feature stream (validated pair for the dark surface)
 const REF = '#d95926'     // baseline stream
-const FEATURE_NAMES = { dyn_gop: '动态关键帧', roi: 'ROI 编码', compare: '对比模式' }
+const FEATURE_NAMES = { dyn_gop: '动态关键帧', roi: 'ROI 编码', skip_static: '跳过静止', compare: '对比模式' }
 const REASONS = { gop: '定时', viewer: '有人播放', activity: '目标出现', alarm: '告警', x264: '编码器' }
 
 const devices = computed(() => store.devices.filter(d => d.online && d.ai_enabled))
@@ -184,6 +202,9 @@ const chartSeries = key => {
   }
   return out
 }
+
+// Worker-wide numbers (not per output stream): one series
+const mainSeries = (key, name) => [{ name, color: ON, points: history.value.map(h => ({ t: h.t, v: h.main?.[key] })) }]
 
 // Plain-language summary of the last minute, only while both streams have data
 const verdict = computed(() => {
