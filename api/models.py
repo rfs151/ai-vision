@@ -22,6 +22,8 @@ class Device(Base):
     classes: Mapped[str] = mapped_column(String(200), default="person,bicycle,car,motorcycle,bus,truck")
     rules: Mapped[dict] = mapped_column(JSON, default=lambda: dict(DEFAULT_RULES))
     rules_version: Mapped[int] = mapped_column(Integer, default=1)
+    # Video features switched on in the UI (schemas.VideoFeatures); hot-reloaded by the worker
+    video: Mapped[dict | None] = mapped_column(JSON, default=dict)
     # Local time (not SQLite CURRENT_TIMESTAMP, which is UTC): the UI and filters use local time
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
 

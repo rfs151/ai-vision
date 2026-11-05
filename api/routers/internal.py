@@ -41,7 +41,7 @@ def device_by_stream(db, stream):
 @router.get("/rules/{stream}")
 def rules(stream: str, db: Session = Depends(get_db)):
     dev = device_by_stream(db, stream)
-    return {"version": dev.rules_version, "rules": dev.rules}
+    return {"version": dev.rules_version, "rules": dev.rules, "video": dev.video or {}}
 
 
 @router.post("/heartbeat/{stream}")

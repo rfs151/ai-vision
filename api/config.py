@@ -35,6 +35,7 @@ class Settings:
     # Streams published to these apps get a device record + AI worker automatically
     auto_apps = set(filter(None, os.getenv("AUTO_APPS", "live").split(",")))
     ai_app = os.getenv("AI_APP", "ai")                            # workers push annotated output here
+    ai_ref_app = os.getenv("AI_REF_APP", "ai_ref")                # compare mode: baseline encode
     worker_python = os.getenv("WORKER_PYTHON", str(ROOT / ".venv" / "bin" / "python"))
     worker_script = str(ROOT / "worker" / "worker.py")
     worker_args = os.getenv("WORKER_ARGS", "")                    # extra args for every worker

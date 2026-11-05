@@ -70,7 +70,8 @@ class WorkerManager:
     def build_args(self, device):
         src = f"{settings.zlm_rtsp}/{device.app}/{device.stream}"
         dst = f"{settings.zlm_rtsp}/{settings.ai_app}/{device.stream}"
-        args = [settings.worker_python, settings.worker_script, "--src", src, "--dst", dst,
+        ref = f"{settings.zlm_rtsp}/{settings.ai_ref_app}/{device.stream}"
+        args = [settings.worker_python, settings.worker_script, "--src", src, "--dst", dst, "--ref-dst", ref,
                 "--name", device.stream, "--api", settings.api_url,
                 "--det-fps", str(device.det_fps), "--classes", device.classes]
         return args + shlex.split(settings.worker_args)

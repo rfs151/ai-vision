@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Zone(BaseModel):
@@ -30,6 +30,13 @@ class Rules(BaseModel):
     lines: list[Line] = []
 
 
+class VideoFeatures(BaseModel):
+    """Per-device video features (worker/video.py). All off = what the worker always did."""
+    dyn_gop: bool = False       # 动态关键帧: 10 s interval + keyframe on viewer / activity / alarm
+    roi: bool = False           # ROI 编码: target boxes at a lower QP, background pays under the cap
+    compare: bool = False       # 对比模式: also push a baseline encode (all features off) to ai_ref/
+
+
 class DeviceIn(BaseModel):
     name: str
     app: str = "live"
@@ -53,6 +60,12 @@ class DeviceOut(DeviceIn):
     id: int
     rules: Rules
     rules_version: int
+    video: VideoFeatures = VideoFeatures()
+
+    @field_validator("video", mode="before")
+    @classmethod
+    def _video_default(cls, v):
+        return v or {}      # devices created before the column existed: NULL
     created_at: datetime
     online: bool = False
     worker: dict | None = None

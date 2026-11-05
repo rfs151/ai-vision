@@ -9,7 +9,8 @@ from api.db import get_db
 from api.hub import hub
 from api.manager import manager
 from api.models import Device
-from api.schemas import DeviceIn, DeviceOut, DeviceUpdate, Rules
+from api import tracks
+from api.schemas import DeviceIn, DeviceOut, DeviceUpdate, Rules, VideoFeatures
 from api.zlm import play_urls
 
 log = logging.getLogger("devices")
@@ -29,7 +30,8 @@ def to_out(dev, online, where):
     out.online = (dev.app, dev.stream) in online
     out.worker = manager.status(dev.stream)
     out.play = {"source": play_urls(dev.app, dev.stream, **where),
-                "ai": play_urls(settings.ai_app, dev.stream, **where)}
+                "ai": play_urls(settings.ai_app, dev.stream, **where),
+                "ai_ref": play_urls(settings.ai_ref_app, dev.stream, **where)}
     return out
 
 
@@ -124,6 +126,25 @@ def put_rules(device_id: int, rules: Rules, db: Session = Depends(get_db)):
     db.commit()
     hub.publish("rules", {"device_id": dev.id, "version": dev.rules_version})
     return dev.rules
+
+
+@router.put("/{device_id}/video", response_model=VideoFeatures)
+def put_video(device_id: int, body: VideoFeatures, db: Session = Depends(get_db)):
+    """Video features: saved, then the worker is told to reload (takes effect within ~1 frame)."""
+    dev = get_or_404(db, device_id)
+    dev.video = body.model_dump()
+    db.commit()
+    tracks.send_command(dev.stream, "reload")
+    hub.publish("device", {"device_id": dev.id, "video": dev.video})
+    return dev.video
+
+
+@router.post("/{device_id}/keyframe")
+def keyframe(device_id: int, db: Session = Depends(get_db)):
+    """A player is about to start: ask for a keyframe now. Only acted on with dynamic keyframes
+    (the long interval would otherwise keep a new viewer waiting); harmless otherwise."""
+    dev = get_or_404(db, device_id)
+    return {"sent": tracks.send_command(dev.stream, "keyframe")}
 
 
 @router.post("/{device_id}/worker/{action}")

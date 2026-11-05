@@ -27,7 +27,7 @@ def find_device(db, app, stream):
 def auto_register(db, app, stream):
     """A stream pushed to an auto app (default "live") becomes a device. Returns None otherwise.
     Called from the hook and from the reconcile loop (hooks can be lost)."""
-    if app not in settings.auto_apps or app == settings.ai_app:
+    if app not in settings.auto_apps or app in (settings.ai_app, settings.ai_ref_app):
         return None
     if db.scalar(select(Device).where(Device.stream == stream)):
         return None     # stream names are unique; same name under another app: leave it alone
@@ -42,8 +42,8 @@ def auto_register(db, app, stream):
 @router.post("/on_stream_changed")
 def on_stream_changed(body: dict, db: Session = Depends(get_db)):
     app, stream, regist = body.get("app"), body.get("stream"), bool(body.get("regist"))
-    if body.get("schema") not in (None, "rtsp") or app == settings.ai_app:
-        return OK   # one event per stream; ignore our own annotated outputs
+    if body.get("schema") not in (None, "rtsp") or app in (settings.ai_app, settings.ai_ref_app):
+        return OK   # one event per stream; ignore our own annotated outputs (and compare streams)
     dev = find_device(db, app, stream)
     if regist and dev is None:
         dev = auto_register(db, app, stream)
@@ -93,6 +93,6 @@ def on_stream_none_reader(body: dict):
 @router.post("/on_publish")
 def on_publish(body: dict):
     """Optional (not enabled by default). Only local workers may publish to the ai/ app."""
-    if body.get("app") == settings.ai_app and body.get("ip") not in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
+    if body.get("app") in (settings.ai_app, settings.ai_ref_app) and body.get("ip") not in ("127.0.0.1", "::1", "::ffff:127.0.0.1"):
         return {"code": -1, "msg": "ai app is reserved for local workers"}
     return {"code": 0, "msg": "success", "enable_hls": True, "enable_mp4": False}

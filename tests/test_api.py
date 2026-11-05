@@ -268,3 +268,47 @@ async def _deliver(tracks, msg):
     tracks.TracksProtocol().datagram_received(json.dumps(msg).encode(), ("127.0.0.1", 1))
     tracks.TracksProtocol().datagram_received(b"not json", ("127.0.0.1", 1))
     await asyncio.sleep(0.05)
+
+
+def test_video_features_saved_served_and_pushed_to_worker(client, monkeypatch):
+    """PUT /video: stored, returned with the device and to the worker, and a reload command sent
+    over UDP to the address the worker's track boxes come from."""
+    import socket
+    from api import tracks
+    sent = []
+
+    class FakeTransport:
+        def sendto(self, data, addr):
+            sent.append((json.loads(data), addr))
+
+    monkeypatch.setattr(tracks, "_transport", FakeTransport())
+    dev = client.post("/api/devices", json={"name": "v", "stream": "vid1"}).json()
+    assert dev["video"] == {"dyn_gop": False, "roi": False, "compare": False}
+    assert "ai_ref/vid1" in dev["play"]["ai_ref"]["webrtc"].replace("app=ai_ref&stream=", "ai_ref/")
+
+    # Worker not heard from yet: saved, nothing sent (it polls)
+    r = client.put(f"/api/devices/{dev['id']}/video", json={"dyn_gop": True})
+    assert r.json() == {"dyn_gop": True, "roi": False, "compare": False} and sent == []
+    assert client.post(f"/api/devices/{dev['id']}/keyframe").json() == {"sent": False}
+
+    tracks.TracksProtocol().datagram_received(json.dumps({"s": "vid1"}).encode(), ("127.0.0.1", 40000))
+    client.put(f"/api/devices/{dev['id']}/video", json={"dyn_gop": True, "compare": True})
+    assert client.post(f"/api/devices/{dev['id']}/keyframe").json() == {"sent": True}
+    assert sent == [({"cmd": "reload"}, ("127.0.0.1", 40000)), ({"cmd": "keyframe"}, ("127.0.0.1", 40000))]
+
+    assert client.get(f"/api/devices/{dev['id']}").json()["video"] == {"dyn_gop": True, "roi": False, "compare": True}
+    assert client.get("/api/internal/rules/vid1").json()["video"] == {"dyn_gop": True, "roi": False, "compare": True}
+
+    from api.db import SessionLocal
+    from api.models import Device
+    with SessionLocal() as db:                   # row from before the column existed
+        db.get(Device, dev["id"]).video = None
+        db.commit()
+    assert client.get(f"/api/devices/{dev['id']}").json()["video"] == {"dyn_gop": False, "roi": False, "compare": False}
+    assert client.get("/api/internal/rules/vid1").json()["video"] == {}
+
+
+def test_compare_stream_is_not_a_camera(client):
+    changed(client, "ai_ref", "cam9", True)
+    assert all(d["stream"] != "cam9" for d in client.get("/api/devices").json())
+    assert client.calls == []
