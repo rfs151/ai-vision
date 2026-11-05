@@ -12,7 +12,8 @@
 - **6 路并发的性能问题**：推理从 40 ms 变成 380 ms，定位到 OpenVINO 默认绑核、6 个进程抢同几个核，关掉绑核后降到 62 ms（[6.8 节](#68-6-路同时跑推理从-40-ms-变成-380-msopenvino-绑核)）
 - **16 个问题定位记录**：WebRTC 卡顿（RTP 包超过 MTU、关键帧前缺 SPS/PPS）、混合内容、Worker 不恢复、磁盘持续写入等，每个都有现象、根因和修复
 - **告警证据链**：区域入侵、越线、逗留、人数超限，保存截图和前后 10 秒录像，推送企业微信、钉钉
-- **40 个 pytest 用例**：规则、跟踪、录像切片、进程管理、数据保留
+- **视频编码功能可单独开关、左右对比**：动态关键帧（码率相同时 QP 低约 2）、ROI 编码（目标区域 PSNR +7.8 dB）、画面静止时跳过推理（静止时 Worker CPU 72% → 14%），见 [5.8 节](#58-视频编码功能与视频实验室)
+- **56 个 pytest 用例**：规则、跟踪、编码、录像切片、进程管理、数据保留
 
 这份文档记录整个项目从零开始的全过程：ZLMediaKit 的编译、部署和配置，ai-vision 的软件安装、功能设计、遇到的问题和定位过程，以及本机和云服务器的部署运维。
 
@@ -45,7 +46,7 @@
 ```
 
 - **ZLMediaKit**：负责所有流媒体工作（接入、协议转换、分发）。
-- **AI Worker**：一路视频一个进程。PyAV 解码；独立线程按固定帧率（默认 5fps）对最新一帧做 OpenVINO YOLO 推理；每一帧都画上最近一次的检测结果（按卡尔曼速度外推），再用 ffmpeg（x264 zerolatency）推回 ZLM。
+- **AI Worker**：一路视频一个进程。PyAV 解码；独立线程按固定帧率（默认 5fps）对最新一帧做 OpenVINO YOLO 推理；每一帧都画上最近一次的检测结果（按卡尔曼速度外推），再在进程内用 x264（PyAV，zerolatency）编码推回 ZLM。
 - **控制服务**：设备、规则、告警的管理，Worker 进程管理，WebSocket 实时推送，同时提供网页。
 - 三者独立部署、独立扩展：ZLM 只管视频流，Worker 只管计算，控制服务只管业务。
 
@@ -55,6 +56,8 @@
 | 跟踪 | `worker/tracker.py` | ByteTrack：高分框和低分框两轮匹配（匈牙利算法），卡尔曼滤波按实际时间间隔预测 |
 | 规则 | `worker/rules.py` | 区域入侵、逗留、人数超限、越线（区分方向） |
 | 录像 | `worker/clip.py` | 内存盘环形切片，告警时拼接前后 10 秒 |
+| 编码 | `worker/encoder.py` | 进程内 x264（PyAV）：一份编码同时推流和写录像切片；程序控制关键帧和 ROI；统计码率、QP |
+| 视频功能 | `worker/video.py` / `worker/motion.py` | 动态关键帧、ROI 区域、对比模式和 PSNR；用运动矢量判断画面静止 |
 | 告警上报 | `worker/apiclient.py` / `worker/alarm.py` | 后台线程上传（不阻塞分析线程）；单独运行时写到本地 `data/alarms/` |
 | 控制服务 | `api/` | FastAPI + SQLAlchemy；`manager.py` 管理 Worker 进程，`routers/hooks.py` 处理 ZLM 回调，`notify.py` 推送 |
 | 前端 | `web/` | Vue3 + Vite + Element Plus |
@@ -85,6 +88,7 @@
 | ✅ M5 | 告警截图、前后 10 秒录像、企业微信和钉钉推送 | `86b7007` |
 | ✅ M6 | 前端叠加画框、解码延迟修复、压测脚本、Docker Compose、云服务器部署 | `d1adc4f`、`8cb13be` |
 | ✅ 网关 | HTTPS 统一入口 `edgebot.vip`：经网关访问时用同域名 https 播放地址；gzip 压缩 | `853ce23`、`19f66ff` |
+| ✅ 视频 | 进程内编码、动态关键帧、ROI 编码、画面静止时跳过推理；视频实验室（每路单独开关、左右对比） | `fed8b48` … `fa11716` |
 
 ---
 
@@ -316,8 +320,9 @@ curl -X PUT -H "Content-Type: application/json" --data @rules/pedestrians.json \
 #   http://127.0.0.1:8090/#/wall                                监控大屏
 #   http://127.0.0.1/ai/ped.live.mp4                            带检测框的画面
 #   http://127.0.0.1:8090/api/workers                           Worker 状态（帧率、推理耗时、区域人数、越线计数）
+#   http://127.0.0.1:8090/#/lab                                 视频实验室（视频功能开关和左右对比，见 5.8）
 
-# 单元测试（40 个）
+# 单元测试（56 个）
 .venv/bin/python -m pytest -q tests
 ```
 
@@ -351,7 +356,7 @@ Worker 参数：`--det-fps 5`（每秒检测帧数）、`--conf 0.4`（跟踪用
 ```
 PyAV 解码线程（每一帧）──最新帧──▶ 分析线程（5fps）：YOLO → ByteTrack → 规则 → 告警 / 录像请求 / 前端画框数据
         │                                              │
-        └── 每一帧：取最近一次跟踪结果，按卡尔曼速度外推到当前帧时间 → 画框 → ffmpeg 编码推回 ai/<name>
+        └── 每一帧：取最近一次跟踪结果，按卡尔曼速度外推到当前帧时间 → 画框 → x264 编码推回 ai/<name>
 ```
 
 - **抽帧检测**：视频 10–25fps，检测只需要 5fps，算力降到几分之一；中间的帧用跟踪器的速度外推框的位置，画面上的框依然连贯（最多外推 0.5 秒）。
@@ -424,6 +429,7 @@ Vue3 + Vite + Element Plus。构建后由控制服务提供页面，整个系统
 | 规则配置 | **在实时画面上直接画**区域（多边形）和越线；拖动顶点、整体移动、双击边线插入顶点、右键删除顶点；越线可以反转方向；保存后热更新 |
 | 告警中心 | 24 小时统计；按设备、类型、状态、时间筛选；截图和录像；确认或标记误报；`?id=` 直接打开某条告警 |
 | 通知设置 | 企业微信、钉钉机器人配置和测试，推送状态 |
+| 视频实验室 | 每路视频单独开关动态关键帧、ROI 编码、画面静止时跳过推理；对比模式左右并排播放，曲线对比码率、QP、PSNR、推理次数、CPU（见 5.8） |
 
 - `components/Player.vue`：WebRTC 用 ZLM 自带的 `ZLMRTCClient.js`（从 ZLM 的 Web 根目录动态加载）；fMP4 用原生 `<video>`，落后超过 3 秒时跳到最新。断流后每 3 秒重试；切回标签页时自动重连；6 秒没有播放进度的卡顿看门狗。
 - `components/RuleCanvas.vue`：canvas 覆盖在视频上，坐标归一化，和 `worker/rules.py` 一致；IN 箭头的方向和 Worker 用同一个公式计算。
@@ -438,8 +444,8 @@ cd web && node e2e/playtest.mjs "$(which google-chrome)" /tmp/shots 40
 ### 5.5 告警录像和推送（M5）
 
 ```
-Worker 输出编码（x264，只编码一次）
-  └─ ffmpeg tee ─┬─> RTSP 推给 ZLM（ai/<stream>）
+Worker 输出编码（进程内 x264，只编码一次）
+  └─ 同一份数据 ─┬─> RTSP 推给 ZLM（ai/<stream>）
                  └─> 2 秒一段的 MPEG-TS，文件名是开始时间，放在内存盘 /dev/shm/ai-vision-ring/<stream>/
                        只保留最近 60 秒（每路约 150 KB/s，约 9 MB）
 告警 ──> 登记录像任务 [告警前 10 秒, 告警后 10 秒]
@@ -491,6 +497,37 @@ Worker 每次检测后 ──UDP──> API（与 HTTP 同端口号，只监听 
 - **只检测人**：`--classes person`，不需要换模型。
 - **自己训练的模型**（安全帽、烟火等）：导出成 OpenVINO 格式，传入 `--model`，并换成自己的类别列表。
 - **人体姿态（pose）**：输出多了关键点，需要另写后处理。
+
+### 5.8 视频编码功能与视频实验室
+
+```
+解码 → 画框 → Encoder（worker/encoder.py，PyAV 进程内调 libx264）─┬─> RTSP 推给 ZLM（ai/<流名>）
+                 ▲ 关键帧时机、ROI 区域                            └─> 录像切片（内存盘 TS）
+                 │
+             VideoCtl（worker/video.py）◀── 每路开关（设备的 video 字段）◀── 页面「视频实验室」
+                 │                              PUT /api/devices/{id}/video ──UDP reload──> Worker
+                 └─ 对比模式：同一画面再编码一路「全部功能关闭」的基准流 ──> ai_ref/<流名>，两路解码后测 PSNR
+```
+
+| 功能 | 做法 | 实测（同一路视频，码率上限 1200 kbps） |
+|---|---|---|
+| 进程内编码（前提） | 编码从 ffmpeg 子进程改成 Worker 进程内调 libx264（PyAV），一份编码同时推流和写录像切片；每一帧是不是关键帧、哪些区域用低 QP 由程序决定 | 同机 A/B：CPU 相差 3% 以内；离线编码 5.0 ms/帧（原来 5.5） |
+| 动态关键帧 | 关键帧间隔从固定 2 秒拉长到 10 秒；有人开始播放、画面从无目标变为有目标、触发告警时立即插入关键帧 | 平均 QP 从 22.8–23.5 降到 20.5–21.5（画质更好）；不限码率时码率省 12–20%；起播耗时 111 ms，基准流 101 ms，基本不变 |
+| ROI 编码 | 检测框四周外扩 20% 作为感兴趣区域，用 `addroi` 滤镜把 QP 降低约 10；码率被封顶时编码器会提高背景的 QP，等于把码率从背景挪给目标 | 目标区域 PSNR 44.9 dB，基准 37.2 dB（+7.8）；背景 32.5 dB，基准 39.6 dB（−7.2）；码率相同 |
+| 画面静止时跳过推理 | 解码时导出摄像头编码自带的运动矢量（`flags2=+export_mvs`），算出画面变化面积，不做像素计算（每帧 0.06 ms）；两次检测之间平均变化不到 1% 就不跑 YOLO，沿用上次的检测结果，跟踪和规则照常运行；最长 2 秒必跑一次 | 20 秒静止 + 20 秒有人走动循环：每秒推理 5.0 → 3.1 次，Worker CPU 71% → 43%；静止阶段 72% → 14% |
+| 对比模式 | 同一画面再编码一路基准流，左右并排播放；Worker 把两路输出各自解码，每 10 帧算一次目标区域和背景的亮度 PSNR | 每路多占约 5–15% CPU；离开页面自动关闭 |
+
+- **每路单独开关，即时生效**：开关存在设备的 `video` 字段（`dyn_gop`、`roi`、`skip_static`、`compare`）。API 保存后，通过 UDP 往 Worker 发检测框数据的那个地址回发 `reload` 指令，Worker 1 秒内重新拉取配置，不用重启。
+- **起播要关键帧**：间隔拉长到 10 秒后，新观众最多要等 10 秒才有画面。播放器开始播放前调 `POST /api/devices/{id}/keyframe`，Worker 立即插入一个关键帧；ZLM 的 GOP 缓存再把它发给新观众。
+- **每个关键帧前带 SPS/PPS**（见 6.5）：`dump_extra` 位流过滤器要在编码器打开（`start_encoding()`）之后创建，否则拿不到 SPS/PPS，切片里就没有。
+- **ROI 要开 AQ**：x264 只在自适应量化（AQ）开启时才使用 ROI，`aq-strength=0` 会直接忽略 ROI。所以所有编码都用 `aq-mode=1:aq-strength=0.05`，不开 ROI 时画质和关闭 AQ 相差不到 0.15 dB。
+- **ROI 时的 QP**：x264 报告的是整帧的基础 QP，开了 ROI 后只代表背景（目标区域低约 10），所以页面提示看 PSNR。
+- **代价**：ROI 让背景明显变糊（背景 PSNR −7 dB），适合只关心人和车的场景。动态关键帧时录像切片按关键帧切，每段最长 10 秒，告警录像会比 20 秒长一些。
+- **画面静止的判断**：运动面积 = 移动了 1 像素以上的块 + 没有运动矢量的块（P 帧里的帧内块，通常是新出现的内容）。样例视频里，静止画面加传感器噪声是 0.2–0.6%，有人走动在 4% 以上。I 帧没有运动矢量，按“不知道”处理，照常推理。
+
+**视频实验室页面**（`web/src/views/Lab.vue`）：选一路视频，四个开关；对比模式下左右并排播放「功能开启」和「基准」两路，显示码率、平均 QP、关键帧间隔 / 大小 / 来源、编码耗时、起播耗时、目标区域和背景 PSNR、画面运动、每秒推理次数、Worker CPU；曲线上用竖线标出开关切换的时刻，最近 1 分钟的对比结论写成一句话。
+
+测试：`tests/test_encoder.py`（强制关键帧带 SPS/PPS、时间戳单调、切片、ROI 画质）、`tests/test_video.py`（动态关键帧、UDP 指令、PSNR 对齐）、`tests/test_motion.py`（静止 / 运动判断、跳过逻辑）；浏览器端 `web/e2e/labtest.mjs`（快速连续切换开关、并排播放、起播耗时）。
 
 ---
 
@@ -696,6 +733,8 @@ Intel 的 `car-detection` 素材是正上方俯拍，COCO 训练的模型几乎�
 | 推流 ffmpeg（模拟摄像头，`-c:v copy`） | 不到 1% | 约 15 MB |
 | ZLM（全部 12 路流共用） | 约 11% | 约 105 MB |
 | **合计** | **约 5.6 核，整机 CPU 约 44%** | **约 1.6 GB** |
+
+表中是改成进程内编码（5.8）之前测的。现在编码在 Worker 进程里，没有单独的编码 ffmpeg，同机 A/B 测试总 CPU 相差 3% 以内。
 
 每路推理 65–90 ms，输出帧率与原视频一致。估算这台机器大约能跑 10 路。
 
@@ -959,7 +998,7 @@ ZLM **只转封装，不转码**：不解码画面，只把同一份 H.264 数�
 | 容器 | 主进程 | 子进程（6 路时） |
 |---|---|---|
 | `ai-vision-zlm-1` | `MediaServer`（ZLMediaKit） | 无 |
-| `ai-vision-app-1` | `uvicorn api.main:app`（页面 + API + WebSocket） | 6 个 `worker.py`，每个带 1 个 `ffmpeg`（libx264 编码） |
+| `ai-vision-app-1` | `uvicorn api.main:app`（页面 + API + WebSocket） | 6 个 `worker.py`（编码在进程内，PyAV + libx264） |
 | `ai-vision-demo-1` | `streams.sh run` | 6 个推流 `ffmpeg`（`-c:v copy`，不转码） |
 
 ```
@@ -967,14 +1006,14 @@ demo 容器                      zlm 容器                       app 容器
 ffmpeg 推流 ──RTSP──▶  live/ped  ──Hook: 流上线──▶  uvicorn (API)
                             │                          │ 启动子进程
                             └──────RTSP 拉流──────▶  worker.py ped
-                                                       │ 解码、检测、跟踪、画框
-                               ai/ped  ◀──RTSP 推流──  ffmpeg（libx264）
+                                                       │ 解码、检测、跟踪、画框、x264 编码
+                               ai/ped  ◀──RTSP 推流────┘
                                  │
                                  ▼
                           浏览器（WebRTC / fMP4）
 ```
 
-一路流对应：1 个推流 ffmpeg（demo 容器）+ 1 个 Worker + 1 个编码 ffmpeg（都在 app 容器）。Worker 放在 app 容器，是因为它的生命周期由 API 管理（9.8）；demo 只是模拟摄像头，接真实摄像头时没有 demo 容器。
+一路流对应：1 个推流 ffmpeg（demo 容器）+ 1 个 Worker（app 容器，编码也在 Worker 进程里）。Worker 放在 app 容器，是因为它的生命周期由 API 管理（9.8）；demo 只是模拟摄像头，接真实摄像头时没有 demo 容器。
 
 ### 9.4 Worker 里各个库的分工
 
@@ -985,10 +1024,10 @@ ffmpeg 推流 ──RTSP──▶  live/ped  ──Hook: 流上线──▶  uvi
 | 跟踪 | 自己实现的 ByteTrack（numpy + scipy） | `tracker.py` |
 | 规则 | 自己实现（OpenCV 判断点是否在多边形内） | `rules.py` |
 | **画框** | OpenCV：`cv2.rectangle`、`putText`、`polylines` | `draw.py` |
-| **编码** + 推流 | ffmpeg 子进程（libx264），从 stdin 读原始 BGR 图像 | `worker.py`：`start_encoder()` |
+| **编码** + 推流 | PyAV 在进程内调 libx264，一份编码同时推流和写录像切片 | `encoder.py` |
 | 告警截图 | OpenCV 存 JPEG | `apiclient.py` |
 
-编码用 ffmpeg 子进程而不是 PyAV，是为了用 ffmpeg 的 `tee` 一次编码同时输出两路：推给 ZLM，以及写告警录像切片。
+早期版本用 ffmpeg 子进程编码（`tee` 一次编码同时推流和写切片）。改成进程内编码，是为了让程序控制每一帧：什么时候插关键帧、哪些区域用低 QP，这是动态关键帧和 ROI 编码的前提（5.8）。旧方式保留为 `--encoder ffmpeg`，用来对比。
 
 ### 9.5 检测的前后处理：letterbox 和 NMS
 
