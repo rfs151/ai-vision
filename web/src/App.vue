@@ -9,6 +9,7 @@
         <el-menu-item index="/wall"><el-icon><Monitor /></el-icon>监控大屏</el-menu-item>
         <el-menu-item index="/devices"><el-icon><VideoCamera /></el-icon>设备管理</el-menu-item>
         <el-menu-item index="/rules"><el-icon><EditPen /></el-icon>规则配置</el-menu-item>
+        <el-menu-item index="/lab"><el-icon><DataLine /></el-icon>视频实验室</el-menu-item>
         <el-menu-item index="/alarms">
           <el-icon><Bell /></el-icon>告警中心
           <el-badge v-if="unread" :value="unread" :max="99" class="badge" />
@@ -27,7 +28,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElNotification } from 'element-plus'
-import { Bell, EditPen, Monitor, Promotion, VideoCamera } from '@element-plus/icons-vue'
+import { Bell, DataLine, EditPen, Monitor, Promotion, VideoCamera } from '@element-plus/icons-vue'
 import { connectWS, loadDevices, loadRecentAlarms, store } from './store'
 import { ALARM_TYPES } from './api'
 import { startIdleWatch } from './idle'

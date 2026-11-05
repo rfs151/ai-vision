@@ -27,6 +27,7 @@
             <!-- ai: boxes burned in by the worker (re-encoded stream); overlay: raw stream + boxes
                  drawn here from live track data (sharper picture, boxes glide at display rate) -->
             <Player :key="slot.stream + source + mode" :urls="slot.play[source === 'ai' ? 'ai' : 'source']" :mode="mode"
+                    :before-start="source === 'ai' ? () => api.keyframe(slot.id) : null"
                     :overlay="source === 'overlay' ? { stream: slot.stream, rules: slot.rules } : null" />
             <div class="overlay top">
               <span class="name">
@@ -76,7 +77,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import Player from '../components/Player.vue'
 import AlarmDialog from '../components/AlarmDialog.vue'
 import { store } from '../store'
-import { ALARM_TYPES, fmtTime } from '../api'
+import { ALARM_TYPES, api, fmtTime } from '../api'
 
 const saved = (k, d) => { try { return JSON.parse(localStorage.getItem('wall.' + k)) ?? d } catch { return d } }
 const layout = ref(saved('layout', 4))

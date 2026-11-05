@@ -24,13 +24,16 @@ const props = defineProps({
   mode: { type: String, default: 'webrtc' },
   fit: { type: String, default: 'contain' },
   overlay: { type: Object, default: null },  // { stream, rules }: draw live track boxes over the video
+  // Called (not awaited for long) before each connect, e.g. to ask the worker for a keyframe now
+  beforeStart: { type: Function, default: null },
 })
-const emit = defineEmits(['size'])
+// firstframe: ms from connect to the first picture on screen (start-up time)
+const emit = defineEmits(['size', 'firstframe'])
 const video = ref(null)
 const status = ref('connecting')
 const statusText = computed(() => ({ connecting: '连接中…', retry: '无信号，重试中…' }[status.value] || ''))
 
-let rtc = null, timer = null, chaser = null, watchdog = null, delayTimer = null, alive = true
+let rtc = null, timer = null, chaser = null, watchdog = null, delayTimer = null, alive = true, gen = 0
 // How far behind live the picture is (s), for aligning overlay boxes with the video
 const delay = ref(0)
 const STALL_MS = 6000
@@ -69,10 +72,21 @@ function retry(reason) {
 
 async function start() {
   stop()
+  const my = ++gen                        // a newer start() (retry, props change) supersedes this one
   if (videoGate.paused) return            // 省流量暂停中：不连接，恢复时由下面的 watch 重新 start
   status.value = 'connecting'
   const v = video.value
-  v.onplaying = () => { status.value = 'playing' }
+  const t0 = performance.now()
+  let first = true
+  v.onplaying = () => {
+    status.value = 'playing'
+    if (first) { first = false; emit('firstframe', Math.round(performance.now() - t0)) }
+  }
+  if (props.beforeStart) {
+    // Short cap: a slow API must not delay the picture
+    await Promise.race([Promise.resolve().then(props.beforeStart).catch(() => {}), new Promise(r => setTimeout(r, 300))])
+    if (!alive || videoGate.paused || my !== gen) return
+  }
   // Freeze watchdog (both modes): visible + supposed to be playing + position not moving -> reconnect.
   // Catches silent freezes: publisher restarted without a WebRTC state change, stalled HTTP stream...
   let lastCt = -1, lastMove = Date.now()
