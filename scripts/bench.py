@@ -94,7 +94,8 @@ def main():
         for w in get(f"{args.api}/api/workers") or []:
             s = w.get("stats") or {}
             if w.get("state") == "running" and s.get("infer_ms"):
-                infer.setdefault(w["stream"], []).append((s["infer_ms"], s.get("out_fps", 0), s.get("resolution")))
+                infer.setdefault(w["stream"], []).append((s["infer_ms"], s.get("out_fps", 0), s.get("resolution"),
+                                                          s.get("out_kbps"), s.get("enc_ms")))
         time.sleep(min(5, max(0, t_end - time.time())))
     b, tb = snapshot(), cpu_total()
     T = args.seconds
@@ -120,12 +121,17 @@ def main():
     print(f"machine CPU busy: {busy * 100:.0f}% of {ncpu} CPUs (includes everything else running)")
 
     if infer:
-        print(f"\n{'stream':12}{'resolution':>12}{'infer ms':>10}{'out fps':>9}  verdict")
+        print(f"\n{'stream':12}{'resolution':>12}{'infer ms':>10}{'out fps':>9}{'out kbps':>10}{'enc ms':>8}  verdict")
         for s, v in sorted(infer.items()):
             ms = sum(x[0] for x in v) / len(v)
             fps = sum(x[1] for x in v) / len(v)
             ok = "ok" if ms < 200 else "TOO SLOW for 5 det/s"
-            print(f"{s:12}{str(v[-1][2]):>12}{ms:10.1f}{fps:9.1f}  {ok}")
+            # Encoder numbers come from the in-process encoder (absent with --encoder ffmpeg)
+            kb = [x[3] for x in v if x[3] is not None]
+            en = [x[4] for x in v if x[4] is not None]
+            kb = f"{sum(kb) / len(kb):10.0f}" if kb else f"{'-':>10}"
+            en = f"{sum(en) / len(en):8.1f}" if en else f"{'-':>8}"
+            print(f"{s:12}{str(v[-1][2]):>12}{ms:10.1f}{fps:9.1f}{kb}{en}  {ok}")
         per = [c for (k, _), (c, _, _) in groups.items() if k in ("worker", "encoder")]
         n = len(infer)
         if n:

@@ -7,8 +7,8 @@ Pipeline:
     PyAV decode (main thread, every frame, time t = frame pts)
       ├─> latest frame slot ──> analysis thread (every 1/det_fps s):
       │       YOLO (OpenVINO) -> ByteTrack -> rules -> alarms (snapshot + clip job)
-      └─> draw tracks extrapolated to t + zones/lines ──> ffmpeg (x264) ─┬─> RTSP push to ZLM
-                                                                         └─> 2 s segments in /dev/shm
+      └─> draw tracks extrapolated to t + zones/lines ──> x264 (in-process, PyAV) ─┬─> RTSP push to ZLM
+                                                                                   └─> 2 s segments in /dev/shm
                                                     (clip.py joins them into ±10 s alarm clips)
 Analysis runs on the newest frame only, so slow inference never piles up latency.
 """
@@ -29,8 +29,10 @@ from alarm import AlarmSink
 from apiclient import ApiClient
 from clip import ClipRecorder
 from detector import COCO_NAMES, YoloDetector
+from encoder import Encoder
 from rules import RuleEngine
 from tracker import ByteTracker, views
+from video import VideoCtl
 
 log = logging.getLogger("worker")
 ROOT = Path(__file__).resolve().parent.parent
@@ -60,6 +62,9 @@ class AnalysisThread(threading.Thread):
         self.out_fps = 0.0
         self.resolution = None
         self.connected = False
+        self.encoder = None             # Encoder of the current connection (None with --encoder ffmpeg)
+        self.video = VideoCtl()         # video features (dynamic keyframes, compare stream)
+        self._cpu = (time.monotonic(), time.process_time())
         # Published state, read by the drawing thread (replaced atomically, never mutated)
         self.track_views = []
         self.infer_ms = 0.0
@@ -80,10 +85,16 @@ class AnalysisThread(threading.Thread):
 
     def stats(self):
         e = self.engine
+        # Whole worker process (decode, inference, encode, compare encode), % of one CPU
+        wall, cpu = time.monotonic(), time.process_time()
+        cpu_pct = round((cpu - self._cpu[1]) / max(1e-3, wall - self._cpu[0]) * 100, 1)
+        self._cpu = (wall, cpu)
         return {
             "connected": self.connected, "resolution": self.resolution,
             "out_fps": round(self.out_fps, 1), "infer_ms": round(self.infer_ms, 1),
-            "tracks": len(self.track_views),
+            "tracks": len(self.track_views), "cpu": cpu_pct,
+            **(self.encoder.stats() if self.encoder else {}),
+            **self.video.stats(),
             "zones": {z.id: z.count for z in e.zones} if e else {},
             "lines": {l.id: {"in": l.n_in, "out": l.n_out} for l in e.lines} if e else {},
         }
@@ -171,6 +182,27 @@ class AnalysisThread(threading.Thread):
             self.alarm = (time.monotonic(), "ALARM: " + text, ids, zones)
 
 
+class FfmpegEncoder:
+    """The previous encoder: an ffmpeg subprocess fed raw frames through a pipe (--encoder ffmpeg).
+    Kept for before/after comparisons; no per-frame control and no encoder stats."""
+
+    def __init__(self, dst, w, h, fps, clips=None):
+        self.proc = start_encoder(dst, w, h, fps, clips.tee_output() if clips else None)
+
+    def encode(self, img, t):
+        try:
+            self.proc.stdin.write(img.tobytes())
+        except BrokenPipeError:
+            raise RuntimeError(f"encoder exited (code {self.proc.poll()})") from None
+
+    def close(self):
+        try:
+            self.proc.stdin.close()
+        except BrokenPipeError:
+            pass
+        self.proc.wait(timeout=5)
+
+
 def start_encoder(dst, w, h, fps, extra_out=None):
     """ffmpeg reads raw BGR frames from stdin, encodes H.264 low-latency, pushes RTSP.
     extra_out: a second ffmpeg tee output (alarm clip segments), same encoded stream, no extra cost."""
@@ -230,9 +262,15 @@ def run_once(args, an):
             t = frame.time if frame.time is not None else time.monotonic() - wall0
             if encoder is None:
                 h, w = img.shape[:2]
-                log.info("source %dx%d @ %.2f fps", w, h, fps)
-                encoder = start_encoder(args.dst, w, h, fps, an.clips.tee_output() if an.clips else None)
+                log.info("source %dx%d @ %.2f fps, encoder %s", w, h, fps, args.encoder)
+                if args.encoder == "ffmpeg":
+                    encoder = FfmpegEncoder(args.dst, w, h, fps, an.clips)
+                else:
+                    encoder = Encoder(args.dst, w, h, fps, an.clips.segment_pattern() if an.clips else None,
+                                      an.clips.seg_sec if an.clips else 2)
+                    an.encoder = encoder
                 an.connected, an.resolution = True, f"{w}x{h}"
+            h, w = img.shape[:2]
             an.submit(img.copy(), t)
             frames += 1
             elapsed = time.monotonic() - t_start
@@ -240,20 +278,20 @@ def run_once(args, an):
                 out_fps, frames, t_start = frames / elapsed, 0, time.monotonic()
                 an.out_fps = out_fps
             render(img, t, an, out_fps)
-            try:
-                encoder.stdin.write(img.tobytes())
-            except BrokenPipeError:
-                log.error("encoder exited (code %s)", encoder.poll())
-                return
+            if an.encoder:              # video features need the in-process encoder
+                alarm = an.alarm
+                rois, regions = an.video.apply(encoder, an.track_views, alarm[0] if alarm else None, w, h)
+                ref_packets = an.video.encode_ref(img, t, w, h, fps)
+                packets = encoder.encode(img, t, rois)
+                an.video.measure(img, regions, packets, ref_packets, encoder)
+            else:
+                encoder.encode(img, t)
     finally:
-        an.connected, an.out_fps = False, 0.0
+        an.connected, an.out_fps, an.encoder = False, 0.0, None
         container.close()
+        an.video.close_ref()
         if encoder:
-            try:
-                encoder.stdin.close()
-            except BrokenPipeError:
-                pass
-            encoder.wait(timeout=5)
+            encoder.close()
 
 
 def main():
@@ -273,6 +311,11 @@ def main():
     ap.add_argument("--out", default=str(ROOT / "data" / "alarms"), help="alarm output dir (without --api)")
     ap.add_argument("--clip-pre", type=float, default=10, help="alarm clip: seconds before the alarm")
     ap.add_argument("--clip-post", type=float, default=10, help="alarm clip: seconds after the alarm")
+    ap.add_argument("--encoder", choices=("pyav", "ffmpeg"), default="pyav",
+                    help="pyav: x264 in this process (per-frame control, encoder stats); "
+                         "ffmpeg: the previous ffmpeg subprocess, for comparison")
+    ap.add_argument("--ref-dst", help="compare mode output (baseline encode), e.g. rtsp://127.0.0.1/ai_ref/test")
+    ap.add_argument("--video", default="{}", help='video features as JSON without --api, e.g. {"dyn_gop": true}')
     ap.add_argument("--no-clips", action="store_true", help="no alarm clips (no segment ring)")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -302,11 +345,15 @@ def main():
         clips.start()
     an = AnalysisThread(detector, tracker, rules_cfg, sink, args.det_fps, clips)
     an.stream = name
+    an.video.ref_dst = args.ref_dst
+    an.video.set_config(client.video if client else json.loads(args.video))
     if client:
         an.on_tracks = client.send_tracks
     an.start()
     if client:
         client.stats_fn = an.stats
+        client.on_video = an.video.set_config
+        client.on_viewer = an.video.viewer_joined
         client.start(an.set_rules)
 
     # Reconnect with exponential backoff: 1, 2, 4 ... 30 s

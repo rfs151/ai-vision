@@ -57,3 +57,18 @@ def test_cleanup_keeps_segments_a_pending_job_needs(tmp_path):
     r.request(now - 95)                                    # needs segments from now-105
     r.cleanup(now)
     assert sorted(int(p.stem) for p in r.dir.glob("*.ts")) == [now - 100, now - 30, now - 2]
+
+
+def test_job_waits_for_the_segment_after_its_end(tmp_path):
+    """Long keyframe interval: the segment holding job.end is still open until the next one starts."""
+    r = ClipRecorder(tmp_path / "ring", on_clip=None, pre=3, post=3)
+    t0 = 1_000_000
+    job = r.request(t0 + 5)                                # ends at t0+8
+    for s in (t0, t0 + 6):                                 # 6 s segments; t0+6 is still being written
+        (r.dir / f"{s}.ts").touch()
+    assert r.ready_jobs(t0 + 12) == []                     # old rule (end + 2 s + 1) would cut here
+    (r.dir / f"{t0 + 12}.ts").touch()                      # next keyframe: t0+6 segment closed
+    assert r.ready_jobs(t0 + 12) == [job]
+    r.jobs = [job]
+    (r.dir / f"{t0 + 12}.ts").unlink()
+    assert r.ready_jobs(job.end + r.WAIT_MAX) == [job]     # stalled stream: cut anyway

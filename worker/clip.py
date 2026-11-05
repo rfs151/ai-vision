@@ -1,6 +1,6 @@
 """Alarm clips: the annotated video from PRE seconds before an alarm to POST seconds after.
 
-The output encoder also writes its H.264 to short MPEG-TS segments (ffmpeg tee + segment muxer),
+The output encoder also writes its H.264 to short MPEG-TS segments (segment muxer, same packets),
 named by their start time in epoch seconds, in a RAM ring directory (/dev/shm). Old segments are
 deleted. When an alarm fires, a job waits until POST seconds have passed, then the covering
 segments are joined into an MP4 without re-encoding (a few ms of CPU).
@@ -50,8 +50,9 @@ class ClipJob:
 
 class ClipRecorder(threading.Thread):
     MAX_LEN = 40.0
+    WAIT_MAX = 30.0             # cut anyway this long after job.end
 
-    def __init__(self, ring_dir, on_clip, pre=10.0, post=10.0, seg_sec=2, keep_sec=60):
+    def __init__(self, ring_dir, on_clip, pre=10.0, post=10.0, seg_sec=2, keep_sec=90):
         super().__init__(daemon=True, name="clips")
         self.dir = Path(ring_dir)
         shutil.rmtree(self.dir, ignore_errors=True)       # leftovers of a previous run
@@ -66,6 +67,10 @@ class ClipRecorder(threading.Thread):
         """Second output for ffmpeg's tee muxer (the first one is the RTSP push)."""
         return (f"[f=segment:segment_time={self.seg_sec}:segment_format=mpegts:strftime=1]"
                 f"{self.dir}/%s.ts")
+
+    def segment_pattern(self):
+        """Same segments for the in-process encoder (encoder.py, segment muxer)."""
+        return f"{self.dir}/%s.ts"
 
     # ---- used by the analysis thread ----
     def request(self, t=None):
@@ -109,6 +114,16 @@ class ClipRecorder(threading.Thread):
             return None
         return mp4
 
+    def ready_jobs(self, now):
+        """Jobs whose segments are all closed: a newer segment has started at or after job.end.
+        Segments start at keyframes, so with a long keyframe interval (dynamic GOP) that can take
+        a while; WAIT_MAX bounds the wait if the stream stalls."""
+        segs = self.segments()
+        newest = segs[-1][0] if segs else None
+        with self.lock:
+            return [j for j in self.jobs
+                    if (newest is not None and newest >= j.end) or now >= j.end + self.WAIT_MAX]
+
     def cleanup(self, now):
         with self.lock:
             oldest_needed = min((j.start for j in self.jobs), default=now) - self.seg_sec
@@ -121,9 +136,7 @@ class ClipRecorder(threading.Thread):
         while True:
             time.sleep(0.5)
             now = time.time()
-            # Ready once the segment containing job.end is closed (+1 s margin for the muxer)
-            with self.lock:
-                ready = [j for j in self.jobs if now >= j.end + self.seg_sec + 1]
+            ready = self.ready_jobs(now)
             for job in ready:
                 try:
                     mp4 = self.cut(job)
