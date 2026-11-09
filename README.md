@@ -53,8 +53,10 @@
 | 模块 | 文件 | 说明 |
 |---|---|---|
 | 检测 | `worker/detector.py` | OpenVINO YOLO，手写 letterbox 和 NMS，运行时不需要 torch |
+| 帧时间戳 | `worker/zlmclock.py` | 每条检测结果对应的 RTP 时间戳 / fMP4 时间，前端画框按帧对齐 |
 | 跟踪 | `worker/tracker.py` | ByteTrack：高分框和低分框两轮匹配（匈牙利算法），卡尔曼滤波按实际时间间隔预测 |
 | 规则 | `worker/rules.py` | 区域入侵、逗留、人数超限、越线（区分方向） |
+| 姿态 / 摔倒 | `worker/fall.py` | 姿态模型（yolo11n-pose，17 个关键点）的姿态判断（站立 / 弯腰 / 躺地）和摔倒检测 |
 | 录像 | `worker/clip.py` | 内存盘环形切片，告警时拼接前后 10 秒 |
 | 编码 | `worker/encoder.py` | 进程内 x264（PyAV）：一份编码同时推流和写录像切片；程序控制关键帧和 ROI；统计码率、QP |
 | 视频功能 | `worker/video.py` / `worker/motion.py` | 动态关键帧、ROI 区域、对比模式和 PSNR；用运动矢量判断画面静止 |
@@ -89,6 +91,7 @@
 | ✅ M6 | 前端叠加画框、解码延迟修复、压测脚本、Docker Compose、云服务器部署 | `d1adc4f`、`8cb13be` |
 | ✅ 网关 | HTTPS 统一入口 `edgebot.vip`：经网关访问时用同域名 https 播放地址；gzip 压缩 | `853ce23`、`19f66ff` |
 | ✅ 视频 | 进程内编码、动态关键帧、ROI 编码、画面静止时跳过推理；视频实验室（每路单独开关、左右对比） | `fed8b48` … `fa11716` |
+| ✅ 姿态 | 姿态识别菜单：yolo11n-pose 关键点、骨架、摔倒检测；UR Fall 演示视频（第 8 路 fall） | |
 
 ---
 
@@ -230,6 +233,7 @@ python3 -m venv .venv
 .venv/bin/pip install -i https://mirrors.aliyun.com/pypi/simple/ -r requirements-dev.txt   # pytest
 # 下载 yolo11n.pt 到 worker/models/，然后导出（只需一次）
 scripts/export_model.sh yolo11n          # → worker/models/yolo11n_openvino_model/
+scripts/export_model.sh yolo11n-pose     # 姿态识别用（自动下载 .pt）→ worker/models/yolo11n-pose_openvino_model/
 ```
 
 运行时**不需要 torch**：前处理（letterbox）和后处理（解码输出、NMS）都是自己实现的，和 ultralytics 官方推理结果一致（类别、置信度、框坐标相同）。
@@ -307,7 +311,7 @@ scripts/build_web.sh                     # 生成 web/dist
 scripts/run_api.sh                       # 管理页面 http://127.0.0.1:8090/，接口文档 /docs
 
 # 3. 推测试视频：API 会自动注册设备并启动 Worker
-scripts/get_samples.sh                   # 下载并转码 6 段测试视频到 data/samples/，再用 store 生成 still（大部分时间静止，演示跳过推理）
+scripts/get_samples.sh                   # 下载并转码 6 段测试视频到 data/samples/，再用 store 生成 still（大部分时间静止，演示跳过推理），拼接 fall（摔倒），车流原片保留 1080p 作 hd（演示 YUV 直通）
 scripts/streams.sh start                 # 按 scripts/streams.conf 一次推 2 路（默认 ped、street，其余在 conf 里取消注释即可） → live/<name>，输出 ai/<name>
 scripts/streams.sh status                # 查看；stop / restart 后面可以跟流名，只操作其中几路
 # 也可以在页面上选：设备管理 -> 测试推流，每路一个开关（存到 data/streams.enabled，优先于 conf 里的注释）
@@ -323,13 +327,13 @@ curl -X PUT -H "Content-Type: application/json" --data @rules/pedestrians.json \
 #   http://127.0.0.1:8090/api/workers                           Worker 状态（帧率、推理耗时、区域人数、越线计数）
 #   http://127.0.0.1:8090/#/lab                                 视频实验室（视频功能开关和左右对比，见 5.8）
 
-# 单元测试（56 个）
+# 单元测试（73 个）
 .venv/bin/python -m pytest -q tests
 ```
 
 不用 API 也能单独运行 Worker：`scripts/run_worker.sh ped --rules rules/pedestrians.json`，告警写到 `data/alarms/ped/`。
 
-Worker 参数：`--det-fps 5`（每秒检测帧数）、`--conf 0.4`（跟踪用的高分阈值，0.1 到这个值之间的低分框只用于维持已有目标）、`--classes person,car`（留空表示全部 80 类）、`--threads 2`（OpenVINO 推理线程数）、`--device CPU|GPU`、`--clip-pre 10 --clip-post 10`、`--no-clips`、`--rules`、`--out`。
+Worker 参数：`--det-fps 5`（每秒检测帧数）、`--conf 0.4`（跟踪用的高分阈值，0.1 到这个值之间的低分框只用于维持已有目标）、`--classes person,car`（留空表示全部 80 类）、`--threads 2`（OpenVINO 推理线程数）、`--device CPU|GPU`、`--clip-pre 10 --clip-post 10`、`--no-clips`、`--rules`、`--out`、`--task detect|pose`（pose 用姿态模型，只识别人，开启摔倒检测）。
 
 ### 测试视频
 
@@ -343,8 +347,11 @@ Worker 参数：`--det-fps 5`（每秒检测帧数）、`--conf 0.4`（跟踪用
 | people | Intel `people-detection` | 室内人员走动 | 人数超限 |
 | worker | Intel `worker-zone-detection` | 工厂工人 | 危险区域入侵 |
 | store | Intel `store-aisle-detection` | 超市过道 | 逗留 |
+| still | 由 store 生成 | 前 20 秒静止的空过道，之后有人走进来 | 画面静止时跳过推理 |
+| hd | Roboflow `vehicles-2`（原始分辨率） | 高速路车流，1920x1080 15fps 42 秒 | YUV 直通（分辨率越高省得越多） |
+| fall | [UR Fall Detection Dataset](http://fenix.ur.edu.pl/~mkepski/ds/uf.html)（热舒夫大学，CC BY-NC-SA 4.0，仅限非商业用途） | 办公室 9 次摔倒 + 3 段日常动作（蹲下、弯腰、坐床），640x480 94 秒 | 姿态识别、摔倒检测 |
 
-转码统一为：宽度不超过 960、帧率不超过 15fps、无 B 帧、每个关键帧带 SPS/PPS、限制关键帧大小（`-crf 23 -maxrate 1200k -bufsize 300k -g 2*fps -bf 0 -x264-params repeat-headers=1`，原因见第 6 节）。
+转码统一为（hd 除外：保持 1080p，码率上限 2500k、缓冲 500k，关键帧约 55 KB）：宽度不超过 960、帧率不超过 15fps、无 B 帧、每个关键帧带 SPS/PPS、限制关键帧大小（`-crf 23 -maxrate 1200k -bufsize 300k -g 2*fps -bf 0 -x264-params repeat-headers=1`，原因见第 6 节）。
 
 `scripts/streams.sh`：每一路单独一个进程组，推流断了（比如 ZLM 重启）2 秒后自动重推；PID 文件在 `data/run/`，日志在 `data/logs/push_<name>.log`；`run` 模式在前台运行（systemd 服务和 Docker 用），每 5 秒按当前选择（`data/streams.enabled`，没有这个文件时看 conf 里的注释）启动或停止各路推流，所以页面上的开关 5 秒内生效。新推上来的 `live/*` 流由 Hook 或者每 3 秒一次的对账循环自动登记成设备，默认开启 AI。
 
@@ -479,25 +486,41 @@ Worker 输出编码（进程内 x264，只编码一次）
 | 选项 | 画面 | 框 |
 |---|---|---|
 | AI 画面 | Worker 画好框后重新编码的 `ai/<stream>` | 画在视频里，每秒随检测更新 5 次 |
-| **原始 + 前端画框** | 原始流 `live/<stream>`，不经过重新编码 | 浏览器用 canvas 画，按卡尔曼速度外推，随屏幕刷新率平滑移动 |
+| **原始 + 前端画框** | 原始流 `live/<stream>`，不经过重新编码 | 浏览器用 canvas 画，按帧时间戳对齐到正在显示的那一帧（WebRTC、fMP4 都支持） |
 | 原始画面 | 原始流 | 无 |
 
 ```
 Worker 每次检测后 ──UDP──> API（与 HTTP 同端口号，只监听 127.0.0.1）──WebSocket──> 订阅了这一路的页面
-  {"s":"ped","p":0.06,"w":768,"h":576,"tr":[[id, 类别, 置信度, x1, y1, x2, y2, vx, vy, 是否告警], ...]}
+  {"s":"ped","p":0.06,"r":2904103056,"z":5840.804,"w":768,"h":576,
+   "tr":[[id, 类别, 置信度, x1, y1, x2, y2, vx, vy, 是否告警, 姿态], ...]}
 ```
 
 - **坐标**：归一化到 0–1；速度单位是"每秒移动多少个画面宽高"。
 - **只发给需要的页面**：页面发送 `{"sub": ["ped"]}` 订阅；数据不入库，也不进 Vue 的响应式系统（每路每秒 5 条，避免无谓的重新渲染）。
-- **时间对齐**：`p` 是 Worker 从收到这一帧到发出结果的耗时，在服务器上测量，不需要对时。浏览器按"收到时间 − p + WebRTC 抖动缓冲延迟"推算这一帧什么时候显示，再按速度外推到当前时刻。实测 WebRTC 从收到一帧到显示约 5 ms。
-- **只支持 WebRTC**：fMP4 在浏览器里有 1–3 秒缓冲，页面拿不到精确值，所以 fMP4 模式下这个选项是灰的。
+- **按帧时间戳对齐**（`worker/zlmclock.py`、`TrackOverlay.vue`）：每条结果带上被检测那一帧在播放器时钟上的时间戳，浏览器用 `requestVideoFrameCallback` 知道屏幕上是哪一帧，直接取那一帧的结果。
+  - `r` = RTP 时间戳。ZLM 把推流端的 RTP 时间戳原样转给所有 RTSP 和 WebRTC 播放器（实测两边逐帧相同），浏览器从 `metadata.rtpTimestamp` 拿到。ffmpeg 会减掉自己会话第一个包的时间戳，所以 Worker 打开流的前后各开一个 RTSP 会话只读 PLAY 回复里的 `RTP-Info: rtptime`：ZLM 让每个新会话从最近的关键帧开始，两次值相同就说明中间没有新关键帧，`r = (pts + rtptime) mod 2^32`。为此打开流时只分析 0.3 秒（默认要读 2.7 秒，正好一个 GOP，永远对不上），并且只收视频（有音频时 ffmpeg 会按 RTCP 重新计时）。
+  - `z` = fMP4 媒体时间。ZLM 给 fMP4 重新打时间戳，和 RTP 不是一条时间线；RTSP 探测、fMP4 探测（读第一个 `moof` 的 `tfdt`）、再 RTSP 探测，两次 RTSP 相同就配对成功，之后每 30 秒重新配对一次。实测偏移量稳定到 1 ms。
+  - 两次检测之间的帧：按前后两次结果插值；后一次结果还没到：按卡尔曼速度外推（最多 0.5 秒）；画面卡住：没有新帧，框也不动；结果迟到超过 1.5 秒：不画。拿不到时间戳时（探测失败、浏览器不支持）退回旧算法："收到时间 − p + WebRTC 抖动缓冲延迟"。
+- **WebRTC 等一等结果**：WebRTC 收到一帧约 5 ms 就显示，而这一帧的检测结果要晚约 150 ms 才到（解码 + 推理 + WebSocket），只能用上一次结果外推。所以前端画框模式下，页面测量"结果到达时刻 − 帧到达时刻"（`metadata.receiveTime`，不受缓冲影响），用最近 50 次的 p90 + 40 ms（最多 600 ms）设置 `jitterBufferTarget`，让画面晚一点显示、等结果到了再画。代价是这个模式下画面多约 260 ms 延迟；普通播放不受影响。
+
+实测（`web/e2e/overlaytest.mjs`，ped，比较画出的框和"屏幕上那一帧真正的检测结果"的中心距离，768 宽）：
+
+| | 平均 | p95 | 最大 |
+|---|---|---|---|
+| WebRTC，旧算法（估算延迟） | 4.1 px | 11.5 px | 38 px |
+| WebRTC，帧时间戳 + 等结果 | 1.1 px | 5.3 px | 33 px |
+| WebRTC，旧算法，WebSocket 抖动* | 7.3 px | 26.4 px | 79 px |
+| WebRTC，帧时间戳 + 等结果，WebSocket 抖动* | 1.0 px | 6.1 px | 22 px（缓冲自动升到 600 ms） |
+| fMP4，帧时间戳（正常 / 抖动） | 0.3 / 0.0 px | 1.5 / 0.2 px | 3 px |
+
+\* 模拟 TCP 卡顿：消息按顺序推迟，80% 推迟 0–50 ms，20% 推迟 300–800 ms。
 
 ### 5.7 更换模型
 
 `worker/detector.py` 适用于所有输出为 `[1, 4+类别数, N]` 的 YOLOv8/YOLO11 检测模型：
 - **只检测人**：`--classes person`，不需要换模型。
 - **自己训练的模型**（安全帽、烟火等）：导出成 OpenVINO 格式，传入 `--model`，并换成自己的类别列表。
-- **人体姿态（pose）**：输出多了关键点，需要另写后处理。
+- **人体姿态（pose）**：已支持，见 5.9。
 
 ### 5.8 视频编码功能与视频实验室
 
@@ -516,19 +539,45 @@ Worker 每次检测后 ──UDP──> API（与 HTTP 同端口号，只监听 
 | 动态关键帧 | 关键帧间隔从固定 2 秒拉长到 10 秒；有人开始播放、画面从无目标变为有目标、触发告警时立即插入关键帧 | 平均 QP 从 22.8–23.5 降到 20.5–21.5（画质更好）；不限码率时码率省 12–20%；起播耗时 111 ms，基准流 101 ms，基本不变 |
 | ROI 编码 | 检测框四周外扩 20% 作为感兴趣区域，用 `addroi` 滤镜把 QP 降低约 10；码率被封顶时编码器会提高背景的 QP，等于把码率从背景挪给目标 | 目标区域 PSNR 44.9 dB，基准 37.2 dB（+7.8）；背景 32.5 dB，基准 39.6 dB（−7.2）；码率相同 |
 | 画面静止时跳过推理 | 解码时导出摄像头编码自带的运动矢量（`flags2=+export_mvs`），算出画面变化面积，不做像素计算（每帧 0.06 ms）；两次检测之间平均变化不到 1% 就不跑 YOLO，沿用上次的检测结果，跟踪和规则照常运行；最长 2 秒必跑一次 | 20 秒静止 + 20 秒有人走动循环：每秒推理 5.0 → 3.1 次，Worker CPU 71% → 43%；静止阶段 72% → 14% |
+| YUV 直通（少做颜色转换） | 默认每帧解码后 YUV→BGR（画框用，再拷贝一份给推理），编码前再 BGR→YUV。开启后框直接画在 YUV 平面上（`draw.Yuv420`：Y 平面原坐标，U/V 平面半坐标；文字先画一张全尺寸蒙版再按 2×2 平均混到 U/V，和 BGR 画完再转 4:2:0 的效果一致），原样送进编码器；推理线程拿到的是未转换的解码帧，只转换要检测的帧，缩放到 640 和转 BGR 一步完成（`SourceFrame`） | 离线（画框 + x264）：1080p 每帧颜色转换 9.8 → 1.4 ms，整个解码循环 17.6 → 7.2 ms，CPU 时间 20.8 → 10.8 ms/帧；540p 转换 5.2 → 0.5 ms，CPU 8.8 → 4.9 ms/帧。线上 768×576：转换 4–5.7 → 0.5 ms；线上 1080p（hd 流，约 10 辆车）：转换 12–15 → 1.6–1.8 ms，Worker CPU 约 116% → 96%。检测结果：缩放后检测和原图检测的框重合度（IoU）0.99 以上 |
 | 对比模式 | 同一画面再编码一路基准流，左右并排播放；Worker 把两路输出各自解码，每 10 帧算一次目标区域和背景的亮度 PSNR | 每路多占约 5–15% CPU；离开页面自动关闭 |
 
-- **每路单独开关，即时生效**：开关存在设备的 `video` 字段（`dyn_gop`、`roi`、`skip_static`、`compare`）。API 保存后，通过 UDP 往 Worker 发检测框数据的那个地址回发 `reload` 指令，Worker 1 秒内重新拉取配置，不用重启。
+- **每路单独开关，即时生效**：开关存在设备的 `video` 字段（`dyn_gop`、`roi`、`skip_static`、`yuv_direct`、`compare`）。API 保存后，通过 UDP 往 Worker 发检测框数据的那个地址回发 `reload` 指令，Worker 1 秒内重新拉取配置，不用重启。
 - **起播要关键帧**：间隔拉长到 10 秒后，新观众最多要等 10 秒才有画面。播放器开始播放前调 `POST /api/devices/{id}/keyframe`，Worker 立即插入一个关键帧；ZLM 的 GOP 缓存再把它发给新观众。
 - **每个关键帧前带 SPS/PPS**（见 6.5）：`dump_extra` 位流过滤器要在编码器打开（`start_encoding()`）之后创建，否则拿不到 SPS/PPS，切片里就没有。
 - **ROI 要开 AQ**：x264 只在自适应量化（AQ）开启时才使用 ROI，`aq-strength=0` 会直接忽略 ROI。所以所有编码都用 `aq-mode=1:aq-strength=0.05`，不开 ROI 时画质和关闭 AQ 相差不到 0.15 dB。
 - **ROI 时的 QP**：x264 报告的是整帧的基础 QP，开了 ROI 后只代表背景（目标区域低约 10），所以页面提示看 PSNR。
 - **代价**：ROI 让背景明显变糊（背景 PSNR −7 dB），适合只关心人和车的场景。动态关键帧时录像切片按关键帧切，每段最长 10 秒，告警录像会比 20 秒长一些。
+- **YUV 直通的画面**：亮度和原流程几乎一样（测试里 PSNR > 45 dB）。2 像素宽的细线落在半尺寸色度网格上，颜色比原流程略饱和，肉眼看不出来。只在 Worker 进程内编码、源是 yuv420p、宽高都是偶数时生效，否则自动走原流程。告警截图照旧画在 BGR 上（只在告警时转换整帧）。
 - **画面静止的判断**：运动面积 = 移动了 1 像素以上的块 + 没有运动矢量的块（P 帧里的帧内块，通常是新出现的内容）。样例视频里，静止画面加传感器噪声是 0.2–0.6%，有人走动在 4% 以上。I 帧没有运动矢量，按“不知道”处理，照常推理。
 
-**视频实验室页面**（`web/src/views/Lab.vue`）：选一路视频，四个开关；对比模式下左右并排播放「功能开启」和「基准」两路，显示码率、平均 QP、关键帧间隔 / 大小 / 来源、编码耗时、起播耗时、目标区域和背景 PSNR、画面运动、每秒推理次数、Worker CPU；曲线上用竖线标出开关切换的时刻，最近 1 分钟的对比结论写成一句话。
+**视频实验室页面**（`web/src/views/Lab.vue`）：选一路视频，五个开关；对比模式下左右并排播放「功能开启」和「基准」两路，显示码率、平均 QP、关键帧间隔 / 大小 / 来源、编码耗时、起播耗时、目标区域和背景 PSNR、画面运动、每秒推理次数、每帧颜色转换耗时、Worker CPU；曲线上用竖线标出开关切换的时刻，最近 1 分钟的对比结论写成一句话。
 
-测试：`tests/test_encoder.py`（强制关键帧带 SPS/PPS、时间戳单调、切片、ROI 画质）、`tests/test_video.py`（动态关键帧、UDP 指令、PSNR 对齐）、`tests/test_motion.py`（静止 / 运动判断、跳过逻辑）；浏览器端 `web/e2e/labtest.mjs`（快速连续切换开关、并排播放、起播耗时）。
+测试：`tests/test_encoder.py`（强制关键帧带 SPS/PPS、时间戳单调、切片、ROI 画质）、`tests/test_video.py`（动态关键帧、UDP 指令、PSNR 对齐）、`tests/test_motion.py`（静止 / 运动判断、跳过逻辑）、`tests/test_yuv_direct.py`（YUV 上画框和 BGR 一致、编码器两种输入、缩放检测坐标还原）；浏览器端 `web/e2e/labtest.mjs`（快速连续切换开关、并排播放、起播耗时）。
+
+### 5.9 姿态识别与摔倒检测
+
+设备多了一个「识别任务」：`detect`（人车检测，yolo11n）或 `pose`（姿态识别，yolo11n-pose）。名字在 `POSE_STREAMS`（默认 `fall`）里的推流自动登记为 `pose`，每秒推理 8 次（摔倒过程不到 1 秒）；其他设备可以在「姿态识别 → 管理姿态识别设备」或设备编辑里切换，Worker 自动重启。
+
+- **模型**：pose 模型只有一个类别（人），输出 `[1, 4+1+17×3, N]`，每人 17 个 COCO 关键点（鼻、眼、耳、肩、肘、腕、胯、膝、踝）。`detector.py` 用同一套 letterbox / NMS，多解析关键点；跟踪器把关键点跟着框一起传递，画面上画骨架。官方模型已经训练好，不需要自己标关键点。
+- **姿态**（`worker/fall.py`）：主要看外框宽高比，躯干角度（胯 → 肩连线和竖直方向的夹角）辅助。在 UR Fall 视频上实测：站立 0.3–0.5，蹲下 / 弯腰 / 坐 0.6–0.9，躺地 1.1–3.3。小画面里肩、胯关键点经常不准，所以不单靠角度。
+
+| 姿态 | 条件 |
+|---|---|
+| 站立 stand | 宽高比 ≤ 0.6，且躯干倾斜 ≤ 35°（看不到躯干时只看宽高比） |
+| 躺地 lying | 宽高比 ≥ 1.0；或躯干倾斜 ≥ 60° 且宽高比 ≥ 0.8 |
+| 弯腰 bend | 其余（蹲下、坐、弯腰、摔倒的中间过程） |
+
+- **摔倒** = 从站立到躺地用时不超过 `window_sec`（默认 3 秒），并且躺地持续 `confirm_sec`（默认 2 秒）。慢慢躺下、摔倒后马上站起来、单帧的异常框都不报警；同一个人站起来之前只报一次；和其他规则一样受「冷却时间」（`cooldown_sec`）限制，冷却期内的摔倒不再告警，但仍计入摔倒次数。
+- **换编号**：倒地瞬间画面模糊，检测会断几帧，跟踪器给地上的人分配新编号，新编号没有「刚才站着」的历史。所以新出现的人会继承 1.5 秒内在同一位置消失的那个人的站立时间。不加这一步，演示视频 9 次摔倒只能报出 5 次。
+- **配置**：规则 JSON 里的 `fall`：`{"enabled": true, "confirm_sec": 2, "window_sec": 3}`，页面上可改，热更新。
+- **页面**（`web/src/views/Pose.vue`）：播放带骨架的 AI 画面，显示每个人当前的姿态、摔倒次数、推理耗时，右侧是摔倒规则设置和摔倒告警（截图、录像）。大屏的「前端画框」模式里标签也显示姿态。
+
+实测（i5-13500H，640x480，每秒推理 8 次）：pose 推理约 55–75 ms（检测模型约 45 ms），Worker CPU 约 110%；演示视频每轮 9 次摔倒全部报出，3 段日常动作没有误报。
+
+**要识别其他姿态**（举手、蹲下、打架等），按难度递增：① 在关键点上写规则（如手腕高于肩膀 = 举手），不用训练；② 用 pose 模型批量提取关键点，按片段打标签（不用画点），训练一个小分类器；③ 把姿态当类别（如 `fallen`），用 LabelImg 画框训练检测模型。只有官方 17 个点不够用（如特殊视角、非人体的点）时才需要自己标关键点，工具用 X-AnyLabeling（可先用 pose 模型自动标再修正）或 CVAT，YOLO pose 标注格式为每人一行 `类别 cx cy w h x1 y1 v1 … x17 y17 v17`。
+
+测试：`tests/test_fall.py`（姿态判断、快速 / 缓慢倒地、马上站起、换编号继承、规则引擎集成）。
 
 ---
 

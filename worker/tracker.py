@@ -106,7 +106,8 @@ class Track:
     t_start: float = 0.0
     prev_anchor: tuple = None       # anchor point before the latest update (for line crossing)
     anchor: tuple = None
-    extra: dict = field(default_factory=dict)
+    kpts: np.ndarray = None         # pose models: [17, 3] keypoints of the last detection
+    extra: dict = field(default_factory=dict)   # e.g. "pose": posture label set by fall.FallRule
 
     def __post_init__(self):
         self.kf = Kalman(self.box)
@@ -126,15 +127,29 @@ class TrackView:
     box: np.ndarray
     kx: np.ndarray       # kalman state copy
     t: float
+    kpts: np.ndarray = None
+    pose: str = ""       # posture label (stand / bend / lying / FALL), pose models only
 
     def box_at(self, t, max_extrapolate=0.5):
         dt = float(np.clip(t - self.t, 0.0, max_extrapolate))
         cx, cy, w, h, vx, vy, vw, vh = self.kx
         return _cxcywh_to_xyxy(cx + vx * dt, cy + vy * dt, max(w + vw * dt, 1.0), max(h + vh * dt, 1.0))
 
+    def kpts_at(self, t, max_extrapolate=0.5):
+        """Keypoints moved along with the box (same shift as box_at), so the skeleton stays on the body."""
+        if self.kpts is None:
+            return None
+        dt = float(np.clip(t - self.t, 0.0, max_extrapolate))
+        k = self.kpts.copy()
+        k[:, 0] += self.kx[4] * dt
+        k[:, 1] += self.kx[5] * dt
+        return k
+
 
 def views(tracks):
-    return [TrackView(tr.id, tr.name, tr.score, tr.box.copy(), tr.kf.x.copy(), tr.t) for tr in tracks]
+    return [TrackView(tr.id, tr.name, tr.score, tr.box.copy(), tr.kf.x.copy(), tr.t,
+                      None if tr.kpts is None else tr.kpts.copy(), tr.extra.get("pose", ""))
+            for tr in tracks]
 
 
 def _anchor(box):
@@ -209,7 +224,7 @@ class ByteTracker:
             d = remain_high[i]
             if d.score >= self.new:
                 self.tracks.append(Track(box=np.array([d.x1, d.y1, d.x2, d.y2]), score=d.score,
-                                         cls=d.cls, name=d.name, t=t))
+                                         cls=d.cls, name=d.name, t=t, kpts=getattr(d, "kpts", None)))
 
         # 5) drop dead tentative and long-lost tracks
         self.removed = [tr.id for tr in self.tracks
@@ -225,6 +240,7 @@ class ByteTracker:
         tr.kf.update(box)
         tr.box = box
         tr.score = d.score
+        tr.kpts = getattr(d, "kpts", None)
         tr.hits += 1
         tr.t_last_seen = t
         tr.prev_anchor = tr.anchor

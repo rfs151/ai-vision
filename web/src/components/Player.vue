@@ -5,9 +5,10 @@
 <template>
   <div class="player">
     <video ref="video" muted autoplay playsinline :style="{ objectFit: fit }" @loadedmetadata="onMeta" />
-    <TrackOverlay v-if="overlay && !videoGate.paused" :stream="overlay.stream" :rules="overlay.rules" :video="video" :delay="delay" />
+    <TrackOverlay v-if="overlay && !videoGate.paused" :stream="overlay.stream" :rules="overlay.rules" :video="video" :delay="delay"
+                  :frame="shownFrame" :mode="mode" />
     <div v-if="videoGate.paused" class="status paused" @click="resumeVideo">
-      <div>⏸ {{ videoGate.reason === 'hidden' ? '页面在后台，已暂停播放' : '长时间无操作，已暂停播放' }}</div>
+      <div>⏸ 页面在后台，已暂停播放</div>
       <div class="hint">为节省流量 · 点击继续</div>
     </div>
     <div v-else-if="status !== 'playing'" class="status">{{ statusText }}</div>
@@ -34,8 +35,28 @@ const status = ref('connecting')
 const statusText = computed(() => ({ connecting: '连接中…', retry: '无信号，重试中…' }[status.value] || ''))
 
 let rtc = null, timer = null, chaser = null, watchdog = null, delayTimer = null, alive = true, gen = 0
-// How far behind live the picture is (s), for aligning overlay boxes with the video
+// How far behind live the picture is (s): fallback alignment of overlay boxes (WebRTC only)
 const delay = ref(0)
+// The frame on screen (requestVideoFrameCallback): WebRTC RTP timestamp, fMP4 media time.
+// Overlay boxes are matched to it by timestamp (TrackOverlay.vue). Plain object, updated in place:
+// it changes 10-25 times a second and only the overlay's draw loop reads it.
+//   recvAt: RTP timestamp -> when that frame arrived (WebRTC), for measuring how late results are
+//   holdMs: how long the overlay wants WebRTC frames held back so results are there in time
+const shownFrame = { rtp: null, media: null, recvAt: new Map(), holdMs: 0 }
+function watchFrames() {
+  const v = video.value
+  if (!v?.requestVideoFrameCallback) return
+  const cb = (now, m) => {
+    shownFrame.rtp = m.rtpTimestamp ?? null
+    shownFrame.media = m.mediaTime ?? null
+    if (m.rtpTimestamp != null && m.receiveTime != null) {
+      shownFrame.recvAt.set(m.rtpTimestamp, m.receiveTime)
+      if (shownFrame.recvAt.size > 150) shownFrame.recvAt.delete(shownFrame.recvAt.keys().next().value)
+    }
+    if (alive) v.requestVideoFrameCallback(cb)
+  }
+  v.requestVideoFrameCallback(cb)
+}
 const STALL_MS = 6000
 
 function loadRTCClient() {
@@ -112,6 +133,14 @@ async function start() {
     let last = null
     delayTimer = setInterval(async () => {
       if (!props.overlay || !rtc?.pc) return
+      // Overlay: WebRTC shows a frame ~150 ms before the worker's result for it arrives (decode +
+      // inference + WebSocket). Hold frames that long (measured by TrackOverlay) so every box can
+      // be drawn on its own frame instead of guessed ahead. Only in overlay mode: plain playback
+      // keeps the lowest latency.
+      for (const r of rtc.pc.getReceivers()) {
+        if ('jitterBufferTarget' in r) r.jitterBufferTarget = Math.round(shownFrame.holdMs)
+        else r.playoutDelayHint = shownFrame.holdMs / 1000      // older Chrome
+      }
       try {
         const st = await rtc.pc.getStats()
         st.forEach(r => {
@@ -178,6 +207,7 @@ function onVisibility() {
 
 onMounted(() => {
   document.addEventListener('visibilitychange', onVisibility)
+  watchFrames()
   start()
 })
 onBeforeUnmount(() => {

@@ -11,7 +11,7 @@
       <el-table-column prop="id" label="ID" width="60" />
       <el-table-column label="名称 / 流" min-width="160">
         <template #default="{ row }">
-          <div>{{ row.name }}</div>
+          <div>{{ row.name }} <el-tag v-if="row.task === 'pose'" size="small" type="warning">姿态</el-tag></div>
           <div class="muted">{{ row.app }}/{{ row.stream }}</div>
         </template>
       </el-table-column>
@@ -94,7 +94,13 @@
         <el-form-item label="检测帧率">
           <el-input-number v-model="edit.form.det_fps" :min="1" :max="30" :step="1" /> <span class="muted" style="margin-left: 8px">次/秒</span>
         </el-form-item>
-        <el-form-item label="检测类别">
+        <el-form-item label="识别任务">
+          <el-radio-group v-model="edit.form.task">
+            <el-radio-button value="detect">人车检测</el-radio-button>
+            <el-radio-button value="pose">姿态识别（摔倒）</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="edit.form.task !== 'pose'" label="检测类别">
           <el-select v-model="edit.form.classList" multiple filterable allow-create style="width: 100%">
             <el-option v-for="c in CLASSES" :key="c" :label="c" :value="c" />
           </el-select>
@@ -133,8 +139,8 @@ function openEdit(row) {
   edit.id = row?.id || null
   edit.form = row
     ? { name: row.name, stream: row.stream, source_url: row.source_url || '', ai_enabled: row.ai_enabled,
-        det_fps: row.det_fps, classList: row.classes.split(',').filter(Boolean) }
-    : { name: '', stream: '', source_url: '', ai_enabled: true, det_fps: 5,
+        det_fps: row.det_fps, classList: row.classes.split(',').filter(Boolean), task: row.task || 'detect' }
+    : { name: '', stream: '', source_url: '', ai_enabled: true, det_fps: 5, task: 'detect',
         classList: ['person', 'bicycle', 'car', 'motorcycle', 'bus', 'truck'] }
   edit.visible = true
 }
@@ -142,7 +148,7 @@ function openEdit(row) {
 async function save() {
   const f = edit.form
   const body = { name: f.name, source_url: f.source_url || null, ai_enabled: f.ai_enabled,
-                 det_fps: f.det_fps, classes: f.classList.join(',') }
+                 det_fps: f.det_fps, classes: f.classList.join(','), task: f.task }
   edit.saving = true
   try {
     if (edit.id) await api.updateDevice(edit.id, body)

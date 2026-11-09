@@ -11,6 +11,11 @@ Pipeline:
                                                                                    └─> 2 s segments in /dev/shm
                                                     (clip.py joins them into ±10 s alarm clips)
 Analysis runs on the newest frame only, so slow inference never piles up latency.
+
+Color conversions: by default every decoded frame becomes BGR (for drawing, and copied for the
+analysis thread) and goes back to yuv420p for x264. With the yuv_direct video feature the decode
+loop draws on the yuv420p planes and encodes them as they are, and the analysis thread converts
+only the frames it detects on, scaled down to the detector size in the same pass (SourceFrame).
 """
 import argparse
 import json
@@ -34,6 +39,7 @@ from motion import MotionGate, motion_fraction
 from rules import RuleEngine
 from tracker import ByteTracker, views
 from video import VideoCtl
+from zlmclock import ZlmClock
 
 log = logging.getLogger("worker")
 ROOT = Path(__file__).resolve().parent.parent
@@ -41,11 +47,34 @@ STOP = threading.Event()          # set by SIGTERM
 BANNER_SEC = 3.0
 
 
+class SourceFrame:
+    """yuv_direct: the decoded av.VideoFrame, handed to the analysis thread unconverted. Only the
+    frames it actually analyses get converted: scaled to the detector size and to BGR in one
+    libswscale pass, or in full (BGR) for an alarm snapshot."""
+
+    def __init__(self, frame):
+        self.frame = frame              # not touched by the decode loop after submit()
+        self.shape = (frame.height, frame.width, 3)
+
+    def for_detector(self, imgsz):
+        """BGR at the size the detector's letterbox would scale it to (no upscaling)."""
+        h, w = self.shape[:2]
+        r = min(1.0, imgsz / h, imgsz / w)
+        if r >= 1.0:
+            return self.frame.to_ndarray(format="bgr24")
+        return self.frame.reformat(width=round(w * r), height=round(h * r), format="bgr24",
+                                   interpolation="BILINEAR").to_ndarray()
+
+    def bgr(self):
+        return self.frame.to_ndarray(format="bgr24")
+
+
 class AnalysisThread(threading.Thread):
     """Detect -> track -> rules on the latest frame, at a fixed rate."""
 
-    def __init__(self, detector, tracker, rules_cfg, sink, det_fps, clips=None):
+    def __init__(self, detector, tracker, rules_cfg, sink, det_fps, clips=None, pose=False):
         super().__init__(daemon=True)
+        self.pose = pose                # pose model: keypoints, skeletons, fall rule
         self.clips = clips              # ClipRecorder or None
         self.detector = detector
         self.tracker = tracker
@@ -54,7 +83,7 @@ class AnalysisThread(threading.Thread):
         self.sink = sink
         self.interval = 1.0 / det_fps
         self.cond = threading.Condition()
-        self.pending = None             # (frame, t, wall time the frame arrived)
+        self.pending = None             # (frame, t, wall time the frame arrived, (r, z) frame stamps)
         self.on_tracks = None           # callback(payload) for browser overlays (ApiClient.send_tracks)
         self.stream = ""
         self.running = True
@@ -71,11 +100,13 @@ class AnalysisThread(threading.Thread):
         # Published state, read by the drawing thread (replaced atomically, never mutated)
         self.track_views = []
         self.infer_ms = 0.0
+        self.prep_ms = None             # yuv_direct: conversion for the detector, per inference
+        self.conv_ms = None             # decode loop: color conversions + copies per frame (moving avg)
         self.alarm = None               # (wall_time, text, track_ids, zone_ids)
 
-    def submit(self, frame, t):
+    def submit(self, frame, t, stamps=(None, None)):
         with self.cond:
-            self.pending = (frame, t, time.time())
+            self.pending = (frame, t, time.time(), stamps)
             self.cond.notify()
 
     def reset(self):
@@ -96,11 +127,15 @@ class AnalysisThread(threading.Thread):
             "connected": self.connected, "resolution": self.resolution,
             "out_fps": round(self.out_fps, 1), "infer_ms": round(self.infer_ms, 1),
             "tracks": len(self.track_views), "cpu": cpu_pct,
+            "conv_ms": None if self.conv_ms is None else round(self.conv_ms, 2),
+            "prep_ms": None if self.prep_ms is None else round(self.prep_ms, 2),
             **(self.encoder.stats() if self.encoder else {}),
             **self.video.stats(),
             **self.gate.stats(),
             "zones": {z.id: z.count for z in e.zones} if e else {},
             "lines": {l.id: {"in": l.n_in, "out": l.n_out} for l in e.lines} if e else {},
+            **({"falls": e.fall.count if e and e.fall else 0,
+                "poses": {v.id: v.pose for v in self.track_views}} if self.pose else {}),
         }
 
     def run(self):
@@ -112,7 +147,7 @@ class AnalysisThread(threading.Thread):
                 item, self.pending = self.pending, None
             if item is None:
                 continue
-            frame, t, arrived = item
+            frame, t, arrived, stamps = item
             if self._new_rules is not None:
                 self.rules_cfg, self._new_rules = self._new_rules, None
                 self.engine = None      # rebuilt below with the new config (counters restart)
@@ -127,17 +162,17 @@ class AnalysisThread(threading.Thread):
             try:
                 self._process(frame, t)
                 if self.on_tracks:
-                    self.on_tracks(self._tracks_payload(frame.shape, arrived))
+                    self.on_tracks(self._tracks_payload(frame.shape, arrived, stamps))
             except Exception:
                 log.exception("analysis failed")
             sleep = self.interval - (time.monotonic() - t0)
             if sleep > 0:
                 time.sleep(sleep)
 
-    def _tracks_payload(self, shape, arrived):
+    def _tracks_payload(self, shape, arrived, stamps=(None, None)):
         """Boxes normalized to 0..1 plus Kalman velocity (per second), so a browser can draw them
         over the raw stream at any size and move them smoothly between detections.
-        tr: [id, class, score, x1, y1, x2, y2, vx, vy, in_alarm]"""
+        tr: [id, class, score, x1, y1, x2, y2, vx, vy, in_alarm, posture ("" without a pose model)]"""
         h, w = shape[:2]
         alarm = self.alarm
         hot = alarm[2] if alarm and time.monotonic() - alarm[0] < BANNER_SEC else ()
@@ -147,24 +182,39 @@ class AnalysisThread(threading.Thread):
             vx, vy = v.kx[4], v.kx[5]
             tracks.append([v.id, v.name, round(float(v.score), 2),
                            round(x1 / w, 4), round(y1 / h, 4), round(x2 / w, 4), round(y2 / h, 4),
-                           round(float(vx) / w, 4), round(float(vy) / h, 4), int(v.id in hot)])
+                           round(float(vx) / w, 4), round(float(vy) / h, 4), int(v.id in hot), v.pose])
         # p: seconds from frame arrival to now (decode wait + inference). Measured on this machine,
         # so the browser can use it without comparing clocks: that frame is on screen about
         # (receive time - p + the player's own buffering delay).
-        return {"s": self.stream, "a": round(arrived, 3), "p": round(time.time() - arrived, 3),
-                "w": w, "h": h, "tr": tracks}
+        # r / z: timestamp of the analysed frame on the browser's clocks (WebRTC RTP timestamp,
+        # HTTP-fMP4 media time; see zlmclock.py), so it can draw these boxes on exactly that frame.
+        msg = {"s": self.stream, "a": round(arrived, 3), "p": round(time.time() - arrived, 3),
+               "w": w, "h": h, "tr": tracks}
+        if stamps[0] is not None:
+            msg["r"] = stamps[0]
+        if stamps[1] is not None:
+            msg["z"] = stamps[1]
+        return msg
 
     def _process(self, frame, t):
         if self.engine is None and self.rules_cfg:
             h, w = frame.shape[:2]
-            self.engine = RuleEngine(self.rules_cfg, w, h)
+            self.engine = RuleEngine(self.rules_cfg, w, h, pose=self.pose)
 
         if self.gate.skip(self.video.on("skip_static"), self.last_dets is not None):
             dets = self.last_dets           # picture still: same detections, tracker/rules carry on
         else:
-            t1 = time.perf_counter()
-            dets = self.detector.detect(frame)
-            self.infer_ms = (time.perf_counter() - t1) * 1000
+            if isinstance(frame, SourceFrame):
+                t1 = time.perf_counter()
+                small = frame.for_detector(self.detector.imgsz)
+                t2 = time.perf_counter()
+                dets = self.detector.detect(small, out_size=(frame.shape[1], frame.shape[0]))
+                self.prep_ms = (t2 - t1) * 1000
+            else:
+                t2 = time.perf_counter()
+                dets = self.detector.detect(frame)
+                self.prep_ms = None
+            self.infer_ms = (time.perf_counter() - t2) * 1000
             self.last_dets = dets
         tracks = self.tracker.update(dets, t)
         events = self.engine.update(tracks, t, self.tracker.removed) if self.engine else []
@@ -178,11 +228,12 @@ class AnalysisThread(threading.Thread):
             # One snapshot per event, drawn on the exact frame that triggered it
             ids = {e.track_id for e in alarms}
             zones = {e.rule_id for e in alarms}
-            snap = frame.copy()
+            snap = frame.bgr() if isinstance(frame, SourceFrame) else frame.copy()
             draw.draw_rules(snap, self.engine, zones)
             draw.draw_tracks(snap, tracks, alarm_track_ids=ids)
-            text = " | ".join(f"{e.type} @ {e.rule_name}" + (f" #{e.track_id}" if e.track_id else "")
-                              for e in alarms)
+            # cv2 draws ASCII only: a fall's rule name is Chinese (摔倒检测), show "FALL #id" instead
+            text = " | ".join((f"FALL" if e.type == "fall" else f"{e.type} @ {e.rule_name}")
+                              + (f" #{e.track_id}" if e.track_id else "") for e in alarms)
             draw.draw_banner(snap, "ALARM: " + text)
             job = self.clips.request() if self.clips else None   # alarms of one frame share a clip
             for e in alarms:
@@ -252,7 +303,15 @@ def render(img, t, an, out_fps):
 def run_once(args, an):
     """Process one connection to the source. Returns when the stream ends or errors."""
     log.info("opening %s", args.src)
-    container = av.open(args.src, options={"rtsp_transport": "tcp", "timeout": "5000000"}, timeout=10)
+    # Video only: with an audio track too, ffmpeg re-times packets from RTCP reports, and pts would
+    # no longer be "RTP timestamp - base" (zlmclock.py needs that). The worker never uses audio.
+    # Short stream analysis: ZLM starts us at a keyframe with SPS/PPS, so 0.3 s is plenty. The default
+    # read up to 2.7 s (ped), a whole GOP, and zlmclock could never prove no keyframe came in between.
+    clock = ZlmClock(args.src, args.zlm_http)
+    container = clock.open(lambda: av.open(
+        args.src, options={"rtsp_transport": "tcp", "timeout": "5000000", "allowed_media_types": "video",
+                           "analyzeduration": "300000", "probesize": "200000"},
+        timeout=10))
     an.reset()
     vstream = container.streams.video[0]
     # SLICE, not AUTO: frame threading decodes up to <cpu count> frames in parallel, so each frame
@@ -270,7 +329,12 @@ def run_once(args, an):
         for frame in container.decode(vstream):
             if STOP.is_set():
                 return
-            img = frame.to_ndarray(format="bgr24")
+            # yuv_direct needs the in-process encoder, a yuv420p source and even sizes (chroma planes)
+            direct = (args.encoder != "ffmpeg" and an.video.on("yuv_direct") and frame.format.name == "yuv420p"
+                      and frame.width % 2 == 0 and frame.height % 2 == 0)
+            c0 = time.perf_counter()
+            img = draw.Yuv420.from_frame(frame) if direct else frame.to_ndarray(format="bgr24")
+            conv = time.perf_counter() - c0
             an.gate.add(motion_fraction(frame))     # 0.06 ms; also shown while skip_static is off
             t = frame.time if frame.time is not None else time.monotonic() - wall0
             if encoder is None:
@@ -284,7 +348,13 @@ def run_once(args, an):
                     an.encoder = encoder
                 an.connected, an.resolution = True, f"{w}x{h}"
             h, w = img.shape[:2]
-            an.submit(img.copy(), t)
+            stamps = clock.stamps(frame.pts)
+            if direct:
+                an.submit(SourceFrame(frame), t, stamps)    # converted there, and only if analysed
+            else:
+                c0 = time.perf_counter()
+                an.submit(img.copy(), t, stamps)
+                conv += time.perf_counter() - c0
             frames += 1
             elapsed = time.monotonic() - t_start
             if elapsed >= 1:
@@ -297,10 +367,14 @@ def run_once(args, an):
                 ref_packets = an.video.encode_ref(img, t, w, h, fps)
                 packets = encoder.encode(img, t, rois)
                 an.video.measure(img, regions, packets, ref_packets, encoder)
+                conv += encoder.conv_s
+                # Moving average over ~1 s of frames (heartbeat-sized)
+                an.conv_ms = conv * 1000 if an.conv_ms is None else an.conv_ms + (conv * 1000 - an.conv_ms) / fps
             else:
                 encoder.encode(img, t)
     finally:
         an.connected, an.out_fps, an.encoder = False, 0.0, None
+        clock.stop()
         container.close()
         an.video.close_ref()
         if encoder:
@@ -312,7 +386,10 @@ def main():
     ap.add_argument("--src", required=True, help="input stream, e.g. rtsp://127.0.0.1/live/test")
     ap.add_argument("--dst", required=True, help="output stream, e.g. rtsp://127.0.0.1/ai/test")
     ap.add_argument("--name", help="stream name for alarm output (default: last path part of --src)")
-    ap.add_argument("--model", default=str(ROOT / "worker" / "models" / "yolo11n_openvino_model"))
+    ap.add_argument("--task", choices=("detect", "pose"), default="detect",
+                    help="detect: people + vehicles (yolo11n); pose: people with 17 keypoints and the "
+                         "fall rule (yolo11n-pose)")
+    ap.add_argument("--model", help="model dir / file (default: yolo11n or yolo11n-pose by --task)")
     ap.add_argument("--device", default="CPU")
     ap.add_argument("--threads", type=int, default=2, help="OpenVINO CPU threads per worker, 0 = auto")
     ap.add_argument("--det-fps", type=float, default=5)
@@ -327,6 +404,8 @@ def main():
     ap.add_argument("--encoder", choices=("pyav", "ffmpeg"), default="pyav",
                     help="pyav: x264 in this process (per-frame control, encoder stats); "
                          "ffmpeg: the previous ffmpeg subprocess, for comparison")
+    ap.add_argument("--zlm-http", default="http://127.0.0.1",
+                    help="ZLM http server (fMP4 time probe for browser overlays), empty = off")
     ap.add_argument("--ref-dst", help="compare mode output (baseline encode), e.g. rtsp://127.0.0.1/ai_ref/test")
     ap.add_argument("--video", default="{}", help='video features as JSON without --api, e.g. {"dyn_gop": true}')
     ap.add_argument("--no-clips", action="store_true", help="no alarm clips (no segment ring)")
@@ -337,9 +416,15 @@ def main():
     # and leaves through its finally block (encoder closed after a whole frame, not mid-write).
     signal.signal(signal.SIGTERM, lambda *_: STOP.set())
 
-    classes = [COCO_NAMES.index(n.strip()) for n in args.classes.split(",")] if args.classes else None
+    pose = args.task == "pose"
+    model = args.model or str(ROOT / "worker" / "models" /
+                              ("yolo11n-pose_openvino_model" if pose else "yolo11n_openvino_model"))
+    # A pose model has one class, person: --classes does not apply
+    classes = None if pose else (
+        [COCO_NAMES.index(n.strip()) for n in args.classes.split(",")] if args.classes else None)
     # Detector keeps low-score boxes too: ByteTrack uses them to keep occluded targets alive
-    detector = YoloDetector(args.model, device=args.device, conf=0.1, classes=classes, threads=args.threads)
+    detector = YoloDetector(model, device=args.device, conf=0.1, classes=classes, threads=args.threads,
+                            nkpt=17 if pose else 0)
     tracker = ByteTracker(high_thresh=args.conf, new_thresh=args.conf)
     name = args.name or args.src.rstrip("/").split("/")[-1]
 
@@ -356,7 +441,7 @@ def main():
         base = Path("/dev/shm") if Path("/dev/shm").is_dir() else ROOT / "data"
         clips = ClipRecorder(base / "ai-vision-ring" / name, sink.save_clip, args.clip_pre, args.clip_post)
         clips.start()
-    an = AnalysisThread(detector, tracker, rules_cfg, sink, args.det_fps, clips)
+    an = AnalysisThread(detector, tracker, rules_cfg, sink, args.det_fps, clips, pose=pose)
     an.stream = name
     an.video.ref_dst = args.ref_dst
     an.video.set_config(client.video if client else json.loads(args.video))

@@ -6,6 +6,10 @@
   roi      ROI 编码: the target boxes (+20 % margin) are encoded at a lower QP; under the bitrate
            cap the background pays for it. See encoder.py.
   skip_static 画面静止时跳过推理: see motion.py (applied in worker.AnalysisThread).
+  yuv_direct  YUV 直通: no BGR round trip. The decode loop draws on the decoded yuv420p planes
+           (draw.Yuv420) and hands them to the encoder as they are; the analysis thread converts
+           only the frames it detects on, scaled down to the detector size in the same pass.
+           The default pipeline converts every frame to BGR and back (applied in worker.py).
   compare  对比模式: a second encode of the same picture with every feature off (the baseline),
            pushed to ai_ref/<stream>, so the UI can play both side by side. Costs one more encode,
            plus decoding both outputs to measure their quality (QualityProbe).
@@ -73,7 +77,8 @@ class QualityProbe:
         self.n += 1
         src = mask = None
         if self.n % self.EVERY == 0 and rois:
-            src = luma(av.VideoFrame.from_ndarray(img, format="bgr24").reformat(format="yuv420p"))
+            src = (img.y.astype(np.float32) if hasattr(img, "y")      # draw.Yuv420 (yuv_direct)
+                   else luma(av.VideoFrame.from_ndarray(img, format="bgr24").reformat(format="yuv420p")))
             mask = np.zeros(src.shape, bool)
             for x, y, w, h in rois:
                 mask[y:y + h, x:x + w] = True

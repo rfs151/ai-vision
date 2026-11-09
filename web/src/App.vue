@@ -9,6 +9,7 @@
         <el-menu-item index="/wall"><el-icon><Monitor /></el-icon>监控大屏</el-menu-item>
         <el-menu-item index="/devices"><el-icon><VideoCamera /></el-icon>设备管理</el-menu-item>
         <el-menu-item index="/rules"><el-icon><EditPen /></el-icon>规则配置</el-menu-item>
+        <el-menu-item index="/pose"><el-icon><User /></el-icon>姿态识别</el-menu-item>
         <el-menu-item index="/lab"><el-icon><DataLine /></el-icon>视频实验室</el-menu-item>
         <el-menu-item index="/alarms">
           <el-icon><Bell /></el-icon>告警中心
@@ -28,7 +29,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElNotification } from 'element-plus'
-import { Bell, DataLine, EditPen, Monitor, Promotion, VideoCamera } from '@element-plus/icons-vue'
+import { Bell, DataLine, EditPen, Monitor, Promotion, User, VideoCamera } from '@element-plus/icons-vue'
 import { connectWS, loadDevices, loadRecentAlarms, store } from './store'
 import { ALARM_TYPES } from './api'
 import { startIdleWatch } from './idle'
@@ -43,7 +44,7 @@ watch(() => store.lastAlarm, la => {
   const a = la.alarm
   if (route.path !== '/alarms') unread.value++
   ElNotification({
-    type: a.type === 'intrusion' ? 'error' : 'warning',
+    type: a.type === 'intrusion' || a.type === 'fall' ? 'error' : 'warning',
     title: `${ALARM_TYPES[a.type]?.label || a.type} · ${a.stream}`,
     message: `规则「${a.rule_name}」${a.track_id ? ` 目标 #${a.track_id}` : ''}${a.detail?.count ? ` 人数 ${a.detail.count}` : ''}`,
     duration: 4000,

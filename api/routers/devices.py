@@ -97,7 +97,7 @@ async def update_device(device_id: int, body: DeviceUpdate, request: Request, db
     is_online = (dev.app, dev.stream) in online
     if not dev.ai_enabled:
         manager.stop(dev.stream)
-    elif is_online and changes.keys() & {"ai_enabled", "det_fps", "classes"}:
+    elif is_online and changes.keys() & {"ai_enabled", "det_fps", "classes", "task"}:
         manager.restart(dev)   # worker args changed
     return to_out(dev, online, host_of(request))
 

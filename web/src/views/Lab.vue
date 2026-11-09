@@ -1,4 +1,5 @@
 <!-- 视频实验室：每路视频单独开关视频功能，并排对比开启前后的差异。
+     YUV 直通：Worker 跳过整帧 YUV↔BGR 来回转换（worker/draw.py Yuv420），这里显示每帧转换耗时。
      对比模式下 Worker 额外编码一路「全部功能关闭」的基准流（ai_ref/<流名>），左右同时播放，
      下方曲线同时画两路的码率 / QP，开关切换的时刻画竖线。 -->
 <template>
@@ -56,6 +57,23 @@
             <div><span>Worker CPU</span><b>{{ fmt(stats.cpu, 0) }}</b> %</div>
           </div>
         </div>
+        <div class="feature">
+          <div class="frow">
+            <span class="fname">YUV 直通（少做颜色转换）</span>
+            <el-switch :model-value="feat('yuv_direct')" :loading="saving === 'yuv_direct'" @change="v => setFeature('yuv_direct', v)" />
+          </div>
+          <div class="fdesc">
+            默认每帧都要做两次整帧颜色转换：解码后 YUV→BGR（为了画框，并拷贝一份给推理），编码前再 BGR→YUV。
+            开启后，框直接画在 YUV 画面上，原样送去编码；推理只转换要检测的那几帧，并且缩放和转 BGR 一步完成。画面不变，检测结果不变。
+          </div>
+          <div class="fhint">看：<b>每帧颜色转换</b>耗时和 <b>Worker CPU</b> 下降，分辨率越高越明显（实测 1080p 每帧约 10 ms → 1.5 ms）。</div>
+          <div class="metrics">
+            <div><span>分辨率</span><b>{{ stats.resolution || '-' }}</b></div>
+            <div><span>每帧颜色转换</span><b>{{ fmt(stats.conv_ms, 2) }}</b> ms</div>
+            <div><span>推理前转换</span><b>{{ fmt(stats.prep_ms, 2) }}</b> ms/次</div>
+            <div><span>Worker CPU</span><b>{{ fmt(stats.cpu, 0) }}</b> %</div>
+          </div>
+        </div>
         <el-divider />
         <div class="feature">
           <div class="frow">
@@ -105,6 +123,7 @@
           <LineChart v-if="dev.video.compare" title="背景 PSNR（dB）" unit="dB" :digits="1" :zero="false"
                      :series="chartSeries('psnr_bg')" :markers="markers" />
           <LineChart title="每秒推理次数" unit="次/秒" :digits="1" :series="mainSeries('infer_per_s', '推理')" :markers="markers" />
+          <LineChart title="每帧颜色转换（解码后 + 编码前，不含对比编码）" unit="ms" :digits="2" :series="mainSeries('conv_ms', '转换')" :markers="markers" />
           <LineChart title="Worker CPU" unit="%" :series="mainSeries('cpu', 'CPU')" :markers="markers" />
         </div>
         <div class="note muted">
@@ -126,7 +145,7 @@ import { api } from '../api'
 
 const ON = '#3987e5'      // feature stream (validated pair for the dark surface)
 const REF = '#d95926'     // baseline stream
-const FEATURE_NAMES = { dyn_gop: '动态关键帧', roi: 'ROI 编码', skip_static: '跳过静止', compare: '对比模式' }
+const FEATURE_NAMES = { dyn_gop: '动态关键帧', roi: 'ROI 编码', skip_static: '跳过静止', yuv_direct: 'YUV 直通', compare: '对比模式' }
 const REASONS = { gop: '定时', viewer: '有人播放', activity: '目标出现', alarm: '告警', x264: '编码器' }
 
 const devices = computed(() => store.devices.filter(d => d.online && d.ai_enabled))
@@ -149,7 +168,7 @@ const stats = computed(() => worker.value?.stats || {})
 const players = computed(() => {
   const d = dev.value
   if (!d) return []
-  const anyOn = d.video.dyn_gop || d.video.roi
+  const anyOn = d.video.dyn_gop || d.video.roi || d.video.yuv_direct
   const q = stats.value.quality || {}
   const main = {
     key: 'main', color: ON, urls: d.play.ai, s: { ...stats.value, ...q.main },

@@ -82,17 +82,26 @@ class Encoder:
         # from the heartbeat thread: (time, bytes, keyframe reason or None, qp, encode seconds)
         self._hist = deque()
         self._keys_t = deque(maxlen=6)  # source times of the last keyframes (interval average)
+        self.conv_s = 0.0               # last frame: BGR -> yuv420p (or yuv420p copy) time
 
     def request_keyframe(self, reason="request"):
         with self.lock:
             self.force_key = reason
 
     def encode(self, img, t, rois=None):
-        """img: BGR ndarray; t: source time in seconds (frame pts); rois: [(x, y, w, h)] to encode
-        at higher quality, or None (ROI off). Returns the packets written (for quality checks)."""
+        """img: BGR ndarray, or a draw.Yuv420 (yuv_direct: no color conversion); t: source time in
+        seconds (frame pts); rois: [(x, y, w, h)] to encode at higher quality, or None (ROI off).
+        Returns the packets written (for quality checks)."""
         if self.t0 is None:
             self.t0 = t
-        frame = av.VideoFrame.from_ndarray(img, format="bgr24")
+        t0 = time.perf_counter()
+        if hasattr(img, "to_frame"):
+            frame = img.to_frame()      # already yuv420p: one plane copy
+        else:
+            # BGR -> yuv420p here rather than inside stream.encode() (same libswscale call), so its
+            # time can be shown on its own (conv_s). The ROI filter graph gets yuv420p too.
+            frame = av.VideoFrame.from_ndarray(img, format="bgr24").reformat(format="yuv420p")
+        self.conv_s = time.perf_counter() - t0
         pts = int(round((t - self.t0) / self.tb))
         # Source time must move forward (the muxer rejects anything else); a camera whose clock
         # jumps back, or a repeated pts, gets one frame interval after the previous one instead.
@@ -115,15 +124,16 @@ class Encoder:
         if rois is not None:
             frame = self._roi_filter(frame, rois)
         packets = self.stream.encode(frame)
-        return self._write(packets, time.perf_counter() - t1)
+        # enc_s: getting the frame into yuv420p + x264 (as before, when x264's input conversion
+        # happened inside stream.encode())
+        return self._write(packets, time.perf_counter() - t1 + self.conv_s)
 
     def _roi_filter(self, frame, rois):
-        """BGR -> yuv420p with ROI side data. Rebuilt when the regions change (~0.8 ms, 5x/s)."""
+        """yuv420p frame + ROI side data. Rebuilt when the regions change (~0.8 ms, 5x/s)."""
         rois = tuple(rois)
         if self._graph is None or rois != self._graph_rois:
             g = av.filter.Graph()
-            chain = [g.add_buffer(width=frame.width, height=frame.height, format="bgr24", time_base=self.tb),
-                     g.add("format", "yuv420p")]
+            chain = [g.add_buffer(width=frame.width, height=frame.height, format="yuv420p", time_base=self.tb)]
             for x, y, w, h in rois:
                 chain.append(g.add("addroi", f"x={x}:y={y}:w={w}:h={h}:qoffset={ROI_QOFFSET}"))
             chain.append(g.add("buffersink"))

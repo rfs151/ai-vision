@@ -8,7 +8,8 @@ Rule config (JSON), coordinates normalized to 0..1 so they do not depend on reso
   "zones": [{"id": "z1", "name": "restricted", "polygon": [[x,y],...],
              "classes": ["person"], "intrusion": true, "dwell_sec": 5, "max_count": 3}],
   "lines": [{"id": "l1", "name": "gate", "p1": [x,y], "p2": [x,y],
-             "classes": ["person"], "alarm_on": "in" | "out" | "both" | null}]
+             "classes": ["person"], "alarm_on": "in" | "out" | "both" | null}],
+  "fall": {"enabled": true, "confirm_sec": 2, "window_sec": 3}   # pose workers only, see fall.py
 }
 
 Positions use the track anchor (bottom-center of the box = where it stands).
@@ -20,10 +21,12 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
+from fall import FallRule
+
 
 @dataclass
 class Event:
-    type: str            # intrusion | dwell | crowd | line_in | line_out
+    type: str            # intrusion | dwell | crowd | line_in | line_out | fall
     rule_id: str
     rule_name: str
     t: float             # frame time (s)
@@ -77,12 +80,14 @@ class Line:
 
 
 class RuleEngine:
-    def __init__(self, cfg, frame_w, frame_h):
+    def __init__(self, cfg, frame_w, frame_h, pose=False):
+        """pose: the worker runs a pose model (keypoints), so the fall rule applies."""
         self.cfg = cfg
         self.confirm = cfg.get("confirm_frames", 3)
         self.cooldown = cfg.get("cooldown_sec", 60)
         self.zones = [Zone(z, frame_w, frame_h) for z in cfg.get("zones", [])]
         self.lines = [Line(l, frame_w, frame_h) for l in cfg.get("lines", [])]
+        self.fall = FallRule(cfg.get("fall")) if pose else None
         self._last_alarm = {}   # (rule_id, type) -> t
 
     def reset(self):
@@ -92,6 +97,8 @@ class RuleEngine:
             z.count = 0
         for l in self.lines:
             l.crossed.clear()
+        if self.fall:
+            self.fall.reset()
         self._last_alarm.clear()
 
     def update(self, tracks, t, removed_ids=()):
@@ -103,6 +110,10 @@ class RuleEngine:
             events += self._zone(z, tracks, seen, t)
         for l in self.lines:
             events += self._line(l, tracks, t)
+        # The fall rule itself alarms once per fall (again only after that person stood up);
+        # cooldown_sec applies on top, like every other rule
+        if self.fall:
+            events += [self._ev("fall", self.fall, t, tr) for tr in self.fall.update(tracks, t, removed_ids)]
         for rid in removed_ids:
             for z in self.zones:
                 z.inside.pop(rid, None)

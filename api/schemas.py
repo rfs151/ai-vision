@@ -23,11 +23,19 @@ class Line(BaseModel):
     alarm_on: Literal["in", "out", "both"] | None = None
 
 
+class FallRule(BaseModel):
+    """摔倒检测 (worker/fall.py). Used only by devices with task "pose"."""
+    enabled: bool = True
+    confirm_sec: float = Field(2, ge=0.5, le=30)    # must stay down this long
+    window_sec: float = Field(3, ge=0.5, le=10)     # standing -> lying within this time = a fall
+
+
 class Rules(BaseModel):
     confirm_frames: int = Field(3, ge=1, le=50)
     cooldown_sec: float = Field(60, ge=0)
     zones: list[Zone] = []
     lines: list[Line] = []
+    fall: FallRule = FallRule()
 
 
 class VideoFeatures(BaseModel):
@@ -35,6 +43,7 @@ class VideoFeatures(BaseModel):
     dyn_gop: bool = False       # 动态关键帧: 10 s interval + keyframe on viewer / activity / alarm
     roi: bool = False           # ROI 编码: target boxes at a lower QP, background pays under the cap
     skip_static: bool = False   # 画面静止时跳过推理: no YOLO while the picture does not change
+    yuv_direct: bool = False    # YUV 直通: draw + encode on yuv420p, convert only frames that are analysed
     compare: bool = False       # 对比模式: also push a baseline encode (all features off) to ai_ref/
 
 
@@ -46,6 +55,7 @@ class DeviceIn(BaseModel):
     ai_enabled: bool = True
     det_fps: float = Field(5, gt=0, le=30)
     classes: str = "person,bicycle,car,motorcycle,bus,truck"
+    task: Literal["detect", "pose"] = "detect"
 
 
 class DeviceUpdate(BaseModel):
@@ -54,6 +64,7 @@ class DeviceUpdate(BaseModel):
     ai_enabled: bool | None = None
     det_fps: float | None = Field(None, gt=0, le=30)
     classes: str | None = None
+    task: Literal["detect", "pose"] | None = None
 
 
 class DeviceOut(DeviceIn):
@@ -67,6 +78,11 @@ class DeviceOut(DeviceIn):
     @classmethod
     def _video_default(cls, v):
         return v or {}      # devices created before the column existed: NULL
+
+    @field_validator("task", mode="before")
+    @classmethod
+    def _task_default(cls, v):
+        return v or "detect"
     created_at: datetime
     online: bool = False
     worker: dict | None = None

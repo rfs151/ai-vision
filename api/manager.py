@@ -73,7 +73,8 @@ class WorkerManager:
         ref = f"{settings.zlm_rtsp}/{settings.ai_ref_app}/{device.stream}"
         args = [settings.worker_python, settings.worker_script, "--src", src, "--dst", dst, "--ref-dst", ref,
                 "--name", device.stream, "--api", settings.api_url,
-                "--det-fps", str(device.det_fps), "--classes", device.classes]
+                "--det-fps", str(device.det_fps), "--classes", device.classes,
+                "--task", getattr(device, "task", None) or "detect", "--zlm-http", settings.zlm_api]
         return args + shlex.split(settings.worker_args)
 
     def is_active(self, stream):

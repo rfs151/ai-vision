@@ -20,6 +20,8 @@ class Device(Base):
     ai_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     det_fps: Mapped[float] = mapped_column(Float, default=5)
     classes: Mapped[str] = mapped_column(String(200), default="person,bicycle,car,motorcycle,bus,truck")
+    # detect: people + vehicles (yolo11n); pose: people with keypoints + 摔倒检测 (yolo11n-pose)
+    task: Mapped[str | None] = mapped_column(String(20), default="detect")
     rules: Mapped[dict] = mapped_column(JSON, default=lambda: dict(DEFAULT_RULES))
     rules_version: Mapped[int] = mapped_column(Integer, default=1)
     # Video features switched on in the UI (schemas.VideoFeatures); hot-reloaded by the worker

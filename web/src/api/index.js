@@ -55,6 +55,7 @@ export const ALARM_TYPES = {
   crowd: { label: '人数超限', tag: 'warning' },
   line_in: { label: '越线(进)', tag: 'primary' },
   line_out: { label: '越线(出)', tag: 'primary' },
+  fall: { label: '摔倒', tag: 'danger' },
 }
 
 export const ALARM_STATUS = {

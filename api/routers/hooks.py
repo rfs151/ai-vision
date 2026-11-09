@@ -31,7 +31,9 @@ def auto_register(db, app, stream):
         return None
     if db.scalar(select(Device).where(Device.stream == stream)):
         return None     # stream names are unique; same name under another app: leave it alone
-    dev = Device(name=stream, app=app, stream=stream)
+    pose = stream in settings.pose_streams
+    dev = Device(name=stream, app=app, stream=stream, task="pose" if pose else "detect",
+                 det_fps=8 if pose else 5)   # a fall lasts under a second: sample it more often
     db.add(dev)
     db.commit()
     log.info("auto-registered device %s/%s (id=%d)", app, stream, dev.id)

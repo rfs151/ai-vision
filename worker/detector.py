@@ -5,7 +5,8 @@ Pre/post-processing is done by hand (letterbox + NMS), so runtime only
 needs openvino + numpy + opencv; no torch/ultralytics.
 
 Supports YOLOv8 / YOLO11 detection models exported to OpenVINO or ONNX,
-whose output is [1, 4 + num_classes, N] (cx, cy, w, h, class scores...).
+whose output is [1, 4 + num_classes, N] (cx, cy, w, h, class scores...), and pose models
+(yolo11n-pose): [1, 4 + 1 + 17 * 3, N], one class (person) plus 17 COCO keypoints (x, y, conf).
 """
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,11 +39,12 @@ class Detection:
     score: float
     cls: int
     name: str
+    kpts: np.ndarray = None   # pose models: [17, 3] x, y (pixels), confidence 0..1
 
 
 class YoloDetector:
     def __init__(self, model_path, device="CPU", imgsz=640, conf=0.35, iou=0.5,
-                 classes=None, names=COCO_NAMES, threads=2):
+                 classes=None, names=COCO_NAMES, threads=2, nkpt=0):
         path = Path(model_path)
         if path.is_dir():  # Ultralytics OpenVINO export dir: *_openvino_model/xxx.xml
             path = next(path.glob("*.xml"))
@@ -62,6 +64,7 @@ class YoloDetector:
         self.conf = conf
         self.iou = iou
         self.names = names
+        self.nkpt = nkpt            # 17 for a pose model: its only class is person (id 0)
         # Keep only these class ids (None = all)
         self.classes = None if classes is None else set(classes)
 
@@ -76,13 +79,19 @@ class YoloDetector:
         canvas[top:top + nh, left:left + nw] = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_LINEAR)
         return canvas, r, left, top
 
-    def detect(self, frame):
+    def detect(self, frame, out_size=None):
+        """out_size: (w, h) of the original picture when `frame` is a scaled-down copy of it
+        (yuv_direct); boxes and keypoints come back in original coordinates."""
         img, r, dx, dy = self._letterbox(frame)
+        h, w = frame.shape[:2]
+        if out_size:
+            r *= w / out_size[0]        # dividing by r below then also scales back up
+            w, h = out_size
         # BGR HWC uint8 -> RGB NCHW float32 [0,1]
         blob = img[:, :, ::-1].transpose(2, 0, 1)[None].astype(np.float32) / 255.0
         out = self.model(blob)[0][0]          # [4 + nc, N]
-        out = out.T                           # [N, 4 + nc]
-        scores_all = out[:, 4:]
+        out = out.T                           # [N, 4 + nc (+ nkpt * 3)]
+        scores_all = out[:, 4:out.shape[1] - self.nkpt * 3]
         cls = scores_all.argmax(1)
         scores = scores_all[np.arange(len(cls)), cls]
 
@@ -92,6 +101,11 @@ class YoloDetector:
         if not keep.any():
             return []
         boxes, scores, cls = out[keep, :4], scores[keep], cls[keep]
+        kpts = None
+        if self.nkpt:
+            kpts = out[keep, out.shape[1] - self.nkpt * 3:].reshape(-1, self.nkpt, 3).copy()
+            kpts[..., 0] = (kpts[..., 0] - dx) / r
+            kpts[..., 1] = (kpts[..., 1] - dy) / r
 
         # cx,cy,w,h (letterboxed) -> x,y,w,h (original image)
         xywh = np.empty_like(boxes)
@@ -107,7 +121,6 @@ class YoloDetector:
         if len(idx) == 0:
             return []
 
-        h, w = frame.shape[:2]
         dets = []
         for i in np.array(idx).flatten():
             x, y, bw, bh = xywh[i]
@@ -117,5 +130,6 @@ class YoloDetector:
                 x2=float(min(w, x + bw)), y2=float(min(h, y + bh)),
                 score=float(scores[i]), cls=c,
                 name=self.names[c] if c < len(self.names) else str(c),
+                kpts=None if kpts is None else kpts[i],
             ))
         return dets
