@@ -1,2 +1,6 @@
 # Only needed once, to export YOLO .pt -> OpenVINO
 ultralytics
+# INT8 quantization (scripts/quantize_int8.py)
+nncf
+# 开发文档 pages (scripts/build_docs.py)
+markdown

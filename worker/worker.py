@@ -25,6 +25,7 @@ import signal
 import subprocess
 import threading
 import time
+from collections import deque
 from pathlib import Path
 
 import av
@@ -33,7 +34,7 @@ import draw
 from alarm import AlarmSink
 from apiclient import ApiClient
 from clip import ClipRecorder
-from detector import COCO_NAMES, YoloDetector
+from detector import COCO_NAMES, InferProbe, YoloDetector
 from encoder import Encoder
 from motion import MotionGate, motion_fraction
 from rules import RuleEngine
@@ -96,6 +97,10 @@ class AnalysisThread(threading.Thread):
         self.video = VideoCtl()         # video features (dynamic keyframes, ROI, compare stream)
         self.gate = MotionGate()        # skip_static: skip inference while the picture is still
         self.last_dets = None           # detections of the last real inference (reused when skipping)
+        self.probe = InferProbe()       # rect_input / int8 + compare: baseline on the same frame now and then
+        self.int8_factory = None        # () -> INT8 YoloDetector; None: no INT8 model (int8 feature)
+        self.int8 = None                # loaded on first use
+        self.infer_hist = deque()       # (time, ms) of the last 20 s of inferences, for the average
         self._cpu = (time.monotonic(), time.process_time())
         # Published state, read by the drawing thread (replaced atomically, never mutated)
         self.track_views = []
@@ -123,9 +128,16 @@ class AnalysisThread(threading.Thread):
         wall, cpu = time.monotonic(), time.process_time()
         cpu_pct = round((cpu - self._cpu[1]) / max(1e-3, wall - self._cpu[0]) * 100, 1)
         self._cpu = (wall, cpu)
+        hist = tuple(self.infer_hist)   # snapshot: the analysis thread appends / pops meanwhile
         return {
             "connected": self.connected, "resolution": self.resolution,
             "out_fps": round(self.out_fps, 1), "infer_ms": round(self.infer_ms, 1),
+            "infer_avg_ms": round(sum(m for _, m in hist) / len(hist), 1) if hist else None,
+            "det_input": "%dx%d" % self._active().input_hw[::-1], "rect_ok": self.detector.rect_ok,
+            "model": "INT8" if self._active() is not self.detector else "FP32",
+            "int8_ok": self.int8_factory is not None,
+            **(self.probe.stats() if (self.video.on("rect_input") or self.video.on("int8"))
+               and self.video.on("compare") else {}),
             "tracks": len(self.track_views), "cpu": cpu_pct,
             "conv_ms": None if self.conv_ms is None else round(self.conv_ms, 2),
             "prep_ms": None if self.prep_ms is None else round(self.prep_ms, 2),
@@ -155,6 +167,7 @@ class AnalysisThread(threading.Thread):
                 self._reset = False
                 self.tracker.reset()
                 self.gate.reset()
+                self.probe.reset()
                 self.last_dets = None
                 if self.engine:
                     self.engine.reset()
@@ -196,6 +209,10 @@ class AnalysisThread(threading.Thread):
             msg["z"] = stamps[1]
         return msg
 
+    def _active(self):
+        """The detector in use: the INT8 model while the int8 feature is on (and loaded)."""
+        return self.int8 if self.int8 is not None and self.video.on("int8") else self.detector
+
     def _process(self, frame, t):
         if self.engine is None and self.rules_cfg:
             h, w = frame.shape[:2]
@@ -204,17 +221,29 @@ class AnalysisThread(threading.Thread):
         if self.gate.skip(self.video.on("skip_static"), self.last_dets is not None):
             dets = self.last_dets           # picture still: same detections, tracker/rules carry on
         else:
+            rect = self.video.on("rect_input")
+            if self.video.on("int8") and self.int8 is None and self.int8_factory:
+                self.int8 = self.int8_factory()     # first use: load + compile, untimed
+            det = self._active()
             if isinstance(frame, SourceFrame):
                 t1 = time.perf_counter()
-                small = frame.for_detector(self.detector.imgsz)
-                t2 = time.perf_counter()
-                dets = self.detector.detect(small, out_size=(frame.shape[1], frame.shape[0]))
-                self.prep_ms = (t2 - t1) * 1000
+                img = frame.for_detector(self.detector.imgsz)
+                out_size = (frame.shape[1], frame.shape[0])
+                self.prep_ms = (time.perf_counter() - t1) * 1000
             else:
-                t2 = time.perf_counter()
-                dets = self.detector.detect(frame)
+                img, out_size = frame, None
                 self.prep_ms = None
+            det.prepare(*img.shape[:2], rect=rect)   # first use of a shape: compile, untimed
+            t2 = time.perf_counter()
+            dets = det.detect(img, out_size=out_size, rect=rect)
             self.infer_ms = (time.perf_counter() - t2) * 1000
+            now = time.monotonic()
+            self.infer_hist.append((now, self.infer_ms))
+            while self.infer_hist[0][0] < now - 20.0:
+                self.infer_hist.popleft()
+            changed = (rect and det.rect_ok) or det is not self.detector
+            if changed and self.video.on("compare") and self.probe.due():
+                self.probe.run(self.detector, img, dets, self.infer_ms, out_size)
             self.last_dets = dets
         tracks = self.tracker.update(dets, t)
         events = self.engine.update(tracks, t, self.tracker.removed) if self.engine else []
@@ -390,6 +419,8 @@ def main():
                     help="detect: people + vehicles (yolo11n); pose: people with 17 keypoints and the "
                          "fall rule (yolo11n-pose)")
     ap.add_argument("--model", help="model dir / file (default: yolo11n or yolo11n-pose by --task)")
+    ap.add_argument("--int8-model", help="INT8 model for the int8 video feature "
+                    "(default: <model>_int8_openvino_model next to --model, see scripts/quantize_int8.py)")
     ap.add_argument("--device", default="CPU")
     ap.add_argument("--threads", type=int, default=2, help="OpenVINO CPU threads per worker, 0 = auto")
     ap.add_argument("--det-fps", type=float, default=5)
@@ -442,6 +473,11 @@ def main():
         clips = ClipRecorder(base / "ai-vision-ring" / name, sink.save_clip, args.clip_pre, args.clip_post)
         clips.start()
     an = AnalysisThread(detector, tracker, rules_cfg, sink, args.det_fps, clips, pose=pose)
+    int8 = Path(args.int8_model) if args.int8_model else (
+        Path(model).with_name(Path(model).name.replace("_openvino_model", "_int8_openvino_model")))
+    if int8 != Path(model) and int8.exists():
+        an.int8_factory = lambda: YoloDetector(int8, device=args.device, conf=0.1, classes=classes,
+                                               threads=args.threads, nkpt=17 if pose else 0)
     an.stream = name
     an.video.ref_dst = args.ref_dst
     an.video.set_config(client.video if client else json.loads(args.video))

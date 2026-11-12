@@ -10,6 +10,10 @@
            (draw.Yuv420) and hands them to the encoder as they are; the analysis thread converts
            only the frames it detects on, scaled down to the detector size in the same pass.
            The default pipeline converts every frame to BGR and back (applied in worker.py).
+  rect_input 矩形输入: see detector.py (applied in worker.AnalysisThread).
+  int8     INT8 模型: the quantized <model>_int8_openvino_model (scripts/quantize_int8.py) instead of
+           the FP32 one. With rect_input or int8 and compare on, detector.InferProbe also runs the
+           baseline (FP32, square input) on the same frame now and then.
   compare  对比模式: a second encode of the same picture with every feature off (the baseline),
            pushed to ai_ref/<stream>, so the UI can play both side by side. Costs one more encode,
            plus decoding both outputs to measure their quality (QualityProbe).

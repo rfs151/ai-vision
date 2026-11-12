@@ -36,7 +36,7 @@ RUN set -e; cd /models; \
     for m in "yolo11n $MODEL_URL" "yolo11n-pose $POSE_MODEL_URL"; do \
         set -- $m; [ -f "$1_openvino_model/$1.xml" ] && continue; \
         [ -s "$1.pt" ] || curl -fL -o "$1.pt" "$2"; \
-        PIP_INDEX_URL="$PIP_INDEX" yolo export model="$1.pt" format=openvino imgsz=640 half=False; \
+        PIP_INDEX_URL="$PIP_INDEX" yolo export model="$1.pt" format=openvino imgsz=640 half=False dynamic=True; \
     done
 
 # ---- 3. runtime ----

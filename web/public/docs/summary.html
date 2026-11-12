@@ -1,0 +1,913 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ai-vision 推理加速速览</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: engineering field manual. Sticky section index on the left, one reading column on the right;
+   diagrams and tables sit on a faint "monitor grid" plate. */
+:root {
+  --bg: #f4f6f7;
+  --surface: #ffffff;
+  --plate: #eef2f3;
+  --fg: #1a2127;
+  --muted: #56636e;
+  --line: #d8dee2;
+  --accent: #0d6a75;
+  --accent-soft: #dcefF1;
+  --amber: #a35f00;
+  --font-display: "Space Grotesk", "Noto Sans SC", system-ui, sans-serif;
+  --font-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "Sarasa Mono SC", "Noto Sans Mono CJK SC", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1316; --surface: #151b1f; --plate: #1a2227; --fg: #e3e8eb; --muted: #97a3ad;
+    --line: #2a343b; --accent: #5ab8c3; --accent-soft: #163338; --amber: #e3a54a; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1316; --surface: #151b1f; --plate: #1a2227; --fg: #e3e8eb; --muted: #97a3ad;
+  --line: #2a343b; --accent: #5ab8c3; --accent-soft: #163338; --amber: #e3a54a; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: var(--font-body); font-size: 15.5px; line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-underline-offset: 3px; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+/* ---------- header ---------- */
+.masthead { border-bottom: 1px solid var(--line); background: var(--surface); }
+.masthead-inner {
+  max-width: 1240px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 32px;
+}
+.eyebrow {
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 18px;
+}
+.eyebrow span::before { content: "▸ "; color: var(--accent); }
+h1 {
+  font-family: var(--font-display); font-weight: 700; font-size: clamp(28px, 4.2vw, 42px);
+  line-height: 1.2; margin: 14px 0 16px; text-wrap: balance; letter-spacing: -.01em;
+}
+.intro { max-width: 72ch; color: var(--muted); }
+.intro p { margin: 0 0 8px; }
+.intro code { color: var(--fg); }
+
+/* ---------- page grid ---------- */
+.page {
+  max-width: 1240px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 80px;
+  display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 48px;
+}
+.index { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 20px); align-self: start;
+  max-height: calc(100vh - 40px); overflow-y: auto; font-size: 13.5px; line-height: 1.5; }
+.index summary { display: none; }
+.index-title { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--muted); margin: 0 0 10px; }
+.index ol { list-style: none; margin: 0; padding: 0; }
+.index > details > ol > li { margin-bottom: 6px; }
+.index > details > ol > li > a { font-weight: 500; color: var(--fg); }
+.index ol ol { margin: 4px 0 8px 10px; padding-left: 10px; border-left: 1px solid var(--line); }
+.index ol ol a { color: var(--muted); font-size: 12.5px; }
+.index a { display: block; padding: 2px 6px; border-radius: 4px; text-decoration: none; }
+.index a:hover { background: var(--plate); }
+.index a.active { color: var(--accent); background: var(--accent-soft); }
+
+main { min-width: 0; max-width: 900px; }
+
+/* ---------- content ---------- */
+main h2 {
+  font-family: var(--font-display); font-size: 25px; font-weight: 700; line-height: 1.3;
+  margin: 56px 0 18px; padding-top: 18px; border-top: 2px solid var(--fg); text-wrap: balance;
+  scroll-margin-top: 16px;
+}
+main h2:first-child { margin-top: 0; }
+main h3 {
+  font-family: var(--font-display); font-size: 18.5px; font-weight: 600; margin: 36px 0 12px;
+  text-wrap: balance; scroll-margin-top: 16px;
+}
+main p, main li { max-width: 74ch; }
+main p { margin: 0 0 14px; }
+main ul, main ol { margin: 0 0 16px; padding-left: 1.4em; }
+main li { margin-bottom: 6px; }
+main li::marker { color: var(--accent); }
+strong { font-weight: 700; }
+code {
+  font-family: var(--font-mono); font-size: .86em; background: var(--plate);
+  padding: .1em .38em; border-radius: 4px; overflow-wrap: anywhere;
+}
+
+/* tables */
+.table-wrap { overflow-x: auto; margin: 6px 0 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; line-height: 1.6; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); min-width: 6em; }
+th { background: var(--plate); font-weight: 700; white-space: nowrap; font-size: 12.5px; letter-spacing: .02em; }
+tr:last-child td { border-bottom: 0; }
+td code { white-space: nowrap; }
+
+/* code + ASCII diagrams */
+pre {
+  margin: 6px 0 22px; padding: 16px 18px; overflow-x: auto; border-radius: 8px;
+  font-family: var(--font-mono); font-size: 12.8px; line-height: 1.65;
+  background: var(--surface); border: 1px solid var(--line);
+}
+pre code { background: none; padding: 0; font-size: inherit; overflow-wrap: normal; white-space: pre; }
+pre.ascii {
+  background-color: var(--plate);
+  background-image:
+    linear-gradient(var(--line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line) 1px, transparent 1px);
+  background-size: 22px 22px; background-position: -1px -1px;
+  border-left: 3px solid var(--accent);
+}
+pre.ascii code { background: var(--plate); box-shadow: 0 0 0 4px var(--plate); }
+
+/* mermaid flow charts */
+figure.flow {
+  margin: 8px 0 24px; padding: 18px 12px; overflow-x: auto; border-radius: 8px;
+  background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+}
+figure.flow pre.mermaid { margin: 0; padding: 0; border: 0; background: none; text-align: center; font-family: var(--font-body); }
+
+/* note about estimates */
+.legend {
+  margin: 18px 0 0; padding: 10px 14px; border-radius: 8px; font-size: 13.5px;
+  background: var(--accent-soft); color: var(--fg); max-width: 74ch;
+}
+.legend b { color: var(--amber); }
+
+footer { color: var(--muted); font-size: 12.5px; margin-top: 56px; padding-top: 16px; border-top: 1px solid var(--line); }
+
+/* ---------- narrow screens ---------- */
+@media (max-width: 980px) {
+  .page { grid-template-columns: minmax(0, 1fr); gap: 18px; padding-block: 18px 64px; }
+  .index { position: static; max-height: none; background: var(--surface); border: 1px solid var(--line);
+    border-radius: 8px; padding: 10px 12px; }
+  .index summary { display: list-item; cursor: pointer; font-weight: 700; font-size: 14px; }
+  .index-title { display: none; }
+  .index > details > ol { margin-top: 10px; }
+  main h2 { font-size: 22px; margin-top: 44px; }
+}
+</style>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <div class="eyebrow"><span>ai-vision</span><span>i5-13500H · OpenVINO · yolo11n</span><span>2026-11-11</span></div>
+    <h1>YOLO 推理加速与多模态应用（精简版）</h1>
+    <div class="intro"><p>完整版见 <code>docs/yolo-acceleration-multimodal.md</code>。文中带"估算""待实测"的数字没有在本项目上测过。</p></div>
+    <p class="legend">图例：表中 <b>估算</b>、<b>待实测</b> 的数字没有在本项目上测过；标注"实测"或来自 README 的数字是本机实测。</p>
+  </div>
+</header>
+
+<div class="page">
+  <nav class="index" aria-label="目录">
+    <details id="toc" open>
+      <summary>目录</summary>
+      <p class="index-title">目录</p>
+      <ol><li><a href="#sec-1">1. 加速手段分层</a></li><li><a href="#sec-2">2. 已使用的加速方案</a></li><li><a href="#sec-3">3. 可以提升推理性能的方案</a><ol><li><a href="#sec-int8">实验数据：矩形输入与 INT8 量化</a></li></ol></li><li><a href="#sec-4">4. 应用举例：用自然语言查询告警</a><ol><li><a href="#sec-4-1">4.1 拆开这句话</a></li><li><a href="#sec-4-2">4.2 模块和数据流</a></li><li><a href="#sec-4-3">4.3 各组件怎么协作</a></li><li><a href="#sec-4-4">4.4 跨摄像头关联和轨迹复现</a></li><li><a href="#sec-4-5">4.5 多模型串行推理分析</a></li><li><a href="#sec-4-6">4.6 软硬件环境</a></li><li><a href="#sec-4-7">4.7 可行性</a></li></ol></li></ol>
+    </details>
+  </nav>
+  <main id="content">
+    <h2 id="sec-1">1. 加速手段分层</h2>
+<p>加速手段按位置可以分成五层，越靠上越省事，越靠下改动越大。</p>
+<pre class="ascii"><code>① 少推理：降帧检测 + 卡尔曼外推、画面静止跳过、自适应帧率、不同模型不同频率
+② 小输入：矩形输入、合适的输入尺寸、YUV 直通、预处理放进模型、只对规则区域切图
+③ 小模型：nano 型号、INT8 量化（模型压缩）
+④ 跑得巧：线程数调优、关闭绑核、异步推理、多路合批
+⑤ 加硬件：核显 / NVIDIA GPU（TensorRT、硬件解码编码）、多主机分布式
+</code></pre>
+<h2 id="sec-2">2. 已使用的加速方案</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>方案</th>
+<th>代码位置</th>
+<th>类别</th>
+<th>做法</th>
+<th>实测效果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>OpenVINO IR + 手写前后处理</td>
+<td><code>worker/detector.py</code>、<code>scripts/export_model.sh</code></td>
+<td>推理后端、部署轻量化</td>
+<td>导出 OpenVINO IR；letterbox、NMS 用 numpy 和 OpenCV 实现，运行时不依赖 PyTorch</td>
+<td>37 ms/帧；镜像小、启动快</td>
+</tr>
+<tr>
+<td>2</td>
+<td>推理线程数调优</td>
+<td><code>worker/detector.py:55</code></td>
+<td>运行时调参</td>
+<td>LATENCY 模式，每路固定 2 个线程</td>
+<td>自动线程 158% CPU → 2 线程 43%，延迟 42.9 → 44.2 ms</td>
+</tr>
+<tr>
+<td>3</td>
+<td>关闭 CPU 绑核</td>
+<td><code>worker/detector.py:61</code></td>
+<td>多路调度</td>
+<td><code>ENABLE_CPU_PINNING=False</code>，避免多个进程抢同几个核</td>
+<td>6 路时 380 ms → 62 ms</td>
+</tr>
+<tr>
+<td>4</td>
+<td>降帧检测 + 卡尔曼外推</td>
+<td><code>worker/worker.py</code>、<code>worker/tracker.py</code></td>
+<td>少推理</td>
+<td>每秒只检测 5 帧，中间帧按速度推算框的位置</td>
+<td>24 fps 输入，输出 23.9 fps 不掉帧；比逐帧检测省约 80%</td>
+</tr>
+<tr>
+<td>5</td>
+<td>画面静止时跳过推理</td>
+<td><code>worker/motion.py</code></td>
+<td>少推理</td>
+<td>读摄像头码流里的运动矢量，每帧约 0.06 ms</td>
+<td>静止时 Worker CPU 72% → 14%</td>
+</tr>
+<tr>
+<td>6</td>
+<td>YUV 直通</td>
+<td><code>worker/worker.py:51-62</code></td>
+<td>图片处理</td>
+<td>解码帧先缩到检测尺寸再转颜色，少一次整帧转换</td>
+<td>未单独测</td>
+</tr>
+<tr>
+<td>7</td>
+<td>nano 型号</td>
+<td>—</td>
+<td>模型选型</td>
+<td>选 YOLO11 最小的 n 型号</td>
+<td>约 260 万参数、6.5 GFLOPs；s 型号计算量约 3.3 倍</td>
+</tr>
+<tr>
+<td>8</td>
+<td>压测脚本</td>
+<td><code>scripts/bench.py</code></td>
+<td>评估</td>
+<td>统计每路 CPU、内存、推理耗时，判断是否跟得上</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="sec-3">3. 可以提升推理性能的方案</h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>#</th>
+<th>方案</th>
+<th>类别</th>
+<th>改动点</th>
+<th>预期收益</th>
+<th>工作量</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>INT8 训练后量化（已验证）</td>
+<td>模型压缩</td>
+<td><code>scripts/quantize_int8.py</code>、视频实验室开关</td>
+<td>实测：模型 10.5 → 2.7 MB；单次推理快 1.5–1.9 倍（没有 VNNI 指令）；检测框和 FP32 一致 99–100%（见 下方实验数据）</td>
+<td>中</td>
+</tr>
+<tr>
+<td>2</td>
+<td>矩形输入（已验证）</td>
+<td>图片处理</td>
+<td><code>detector.py</code> 的 letterbox、模型改动态尺寸导出</td>
+<td>实测：16:9 推理少 30–44%，4:3 少 17–31%，检测框不变（见 下方实验数据）</td>
+<td>小</td>
+</tr>
+<tr>
+<td>3</td>
+<td>预处理放进模型</td>
+<td>图片处理</td>
+<td><code>detector.py</code></td>
+<td>每帧省 2–3 次整图拷贝，预计快 1–3 ms</td>
+<td>小</td>
+</tr>
+<tr>
+<td>4</td>
+<td>关闭不需要的 AI 流编码</td>
+<td>图片处理</td>
+<td>Worker 输出</td>
+<td>只用前端画框时省掉每路 x264 编码</td>
+<td>小</td>
+</tr>
+<tr>
+<td>5</td>
+<td>自适应检测帧率</td>
+<td>少推理</td>
+<td><code>worker.py</code> 分析线程</td>
+<td>画面没目标时 CPU 明显下降</td>
+<td>小</td>
+</tr>
+<tr>
+<td>6</td>
+<td>多模型不同频率</td>
+<td>少推理</td>
+<td>分析线程调度</td>
+<td>多模型时省约 40%</td>
+<td>中</td>
+</tr>
+<tr>
+<td>7</td>
+<td>切图检测（只切规则区域）</td>
+<td>精度换算力</td>
+<td><code>detector.py</code></td>
+<td>远处小目标检出率提高，推理量增加</td>
+<td>中</td>
+</tr>
+<tr>
+<td>8</td>
+<td>多路合批 / 异步推理</td>
+<td>吞吐</td>
+<td>新增推理服务进程</td>
+<td>GPU 上吞吐大幅提升；CPU 上收益小</td>
+<td>大</td>
+</tr>
+<tr>
+<td>9</td>
+<td>多主机分布式</td>
+<td>扩容</td>
+<td><code>api/manager.py</code> 加节点代理</td>
+<td>路数随主机数线性增加</td>
+<td>大</td>
+</tr>
+<tr>
+<td>10</td>
+<td>GPU（TensorRT + 硬件编解码）</td>
+<td>加硬件</td>
+<td>推理后端、解码编码</td>
+<td>单机几十路</td>
+<td>大</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="sec-int8">实验数据：矩形输入与 INT8 量化</h3>
+<p>两项都做成了视频实验室的开关（每路单独开关，默认关闭）。对比模式下每 10 次推理用基准（FP32 模型 + 640×640 输入）把同一帧再算一次，对比耗时和检测结果。</p>
+<p><strong>测试条件</strong>：yolo11n / yolo11n-pose，OpenVINO，每路 2 个推理线程、不绑核。线上 3 路视频同时运行（ped 768×576、still 720×404、fall 姿态模型 640×480），每种设置先等 25 秒稳定，再取 50 秒的中位数。WSL 虚拟机没有开放 AVX-VNNI 指令（CPUID 读出为 0），INT8 走的是 AVX2 整数指令。</p>
+<p><strong>线上：单次推理耗时 / Worker CPU</strong></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>视频</th>
+<th>基准（FP32，640×640）</th>
+<th>矩形输入</th>
+<th>INT8</th>
+<th>矩形输入 + INT8</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>still 720×404</td>
+<td>69.7 ms / 68%</td>
+<td>48.5 ms（640×384）/ 51%</td>
+<td>37.1 ms / 46%</td>
+<td>26.5 ms / 35%</td>
+</tr>
+<tr>
+<td>ped 768×576</td>
+<td>64.0 ms / 66%</td>
+<td>51.8 ms（640×480）/ 55%</td>
+<td>43.8 ms / 53%</td>
+<td>37.5 ms / 45%</td>
+</tr>
+<tr>
+<td>fall 640×480（姿态）</td>
+<td>65.7 ms / 105%</td>
+<td>54.5 ms（640×480）/ 84%</td>
+<td>43.0 ms / 77%</td>
+<td>36.0 ms / 65%</td>
+</tr>
+</tbody>
+</table></div>
+<p>四种设置下输出帧率都和原视频一致（10 / 15 fps）。</p>
+<p><strong>线上：同一帧对比（矩形输入 + INT8 对比基准）</strong></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>视频</th>
+<th>基准</th>
+<th>当前设置</th>
+<th>检测框一致</th>
+<th>置信度变化</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>still</td>
+<td>59.1 ms</td>
+<td>29.0 ms</td>
+<td>100%（17 个框）</td>
+<td>+0.016</td>
+</tr>
+<tr>
+<td>ped</td>
+<td>74.8 ms</td>
+<td>40.2 ms</td>
+<td>100%（85 个框）</td>
+<td>−0.007</td>
+</tr>
+<tr>
+<td>fall（姿态）</td>
+<td>53.5 ms</td>
+<td>33.9 ms</td>
+<td>100%（19 个框）</td>
+<td>−0.061</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>离线：纯推理耗时</strong>（<code>benchmark_app</code>，2 线程，两轮；后台有 3 路视频在运行，数值有波动）</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>输入</th>
+<th>FP32</th>
+<th>INT8</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>640×640</td>
+<td>59–65 ms</td>
+<td>31–36 ms</td>
+</tr>
+<tr>
+<td>640×384</td>
+<td>29–43 ms</td>
+<td>20 ms</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>离线：检测结果一致性</strong>（没参与校准的帧，每段视频 30–40 帧）</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>对比</th>
+<th>检测框找回（同类别，IoU ≥ 0.5）</th>
+<th>置信度变化</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>矩形输入 对比 正方形输入（FP32）</td>
+<td>100%</td>
+<td>交通场景 −0.05，人群场景 −0.01</td>
+</tr>
+<tr>
+<td>INT8 对比 FP32（人车检测）</td>
+<td>99.1–100%</td>
+<td>−0.010 ~ +0.039</td>
+</tr>
+<tr>
+<td>INT8 对比 FP32（姿态）</td>
+<td>100%</td>
+<td>−0.011；关键点平均偏移约为人身高的 2%</td>
+</tr>
+</tbody>
+</table></div>
+<p>模型大小：yolo11n 10.5 → 2.7 MB，yolo11n-pose 11.5 → 2.9 MB。</p>
+<p><strong>结论</strong></p>
+<ul>
+<li>两项叠加后，单次推理少 41–62%（still 69.7 → 26.5 ms），Worker CPU 少 32–49%。</li>
+<li>矩形输入的收益取决于画面比例：16:9 最多（线上少 30%，离线少 42–44%），4:3 少 17–31%。</li>
+<li>INT8 在没有 VNNI 指令的情况下，推理仍快 1.5–1.9 倍；在开放了 VNNI 的物理机或服务器上应该更快（待实测）。</li>
+<li>精度：没有带人工标注的数据集，只和基准比较了检测框，没有测 mAP。矩形输入在交通场景置信度略降，阈值附近的车会少报一部分；姿态模型叠加两项后置信度降 0.06，摔倒规则是否受影响要再观察。</li>
+</ul>
+<h2 id="sec-4">4. 应用举例：用自然语言查询告警</h2>
+<p>场景：页面加一个 AI 对话框，输入"最近三天穿黑衣服骑车的人"，系统从告警截图和录像里找出相关记录；选中其中一个人，还能列出他出现过的摄像头，并在三维场景里复现移动轨迹。</p>
+<h3 id="sec-4-1">4.1 拆开这句话</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>条件</th>
+<th>性质</th>
+<th>怎么查</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>最近三天</td>
+<td>时间</td>
+<td>SQL 按告警时间筛选</td>
+</tr>
+<tr>
+<td>骑车</td>
+<td>行为（人 + 自行车/电动车）</td>
+<td>检测阶段用规则判定"骑行"，存成类型或标签，SQL 筛选</td>
+</tr>
+<tr>
+<td>穿黑衣服</td>
+<td>外观</td>
+<td>属性字段（上衣颜色 = 黑）走 SQL，或 CLIP 向量检索</td>
+</tr>
+<tr>
+<td>出现在哪些摄像头</td>
+<td>跨摄像头</td>
+<td>ReID 把各路的轨迹合并成同一个全局 ID（见 4.4）</td>
+</tr>
+<tr>
+<td>怎么走的、在哪停留</td>
+<td>位置和时间</td>
+<td>摄像头标定把画面位置换算成平面图坐标，存成轨迹点（见 4.4）</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="sec-4-2">4.2 模块和数据流</h3>
+<figure class="flow"><pre class="mermaid">flowchart TD
+  subgraph ING[&quot;入库阶段：视频分析时提前准备&quot;]
+    V[&quot;视频帧&quot;] --&gt; D[&quot;yolo11n：人、自行车、摩托车&lt;br/&gt;每秒 5 次&quot;]
+    D --&gt; T[&quot;ByteTrack 跟踪&quot;]
+    T --&gt; RR[&quot;规则：人框与车框大面积重叠、人在车上方&lt;br/&gt;标记“骑行”&quot;]
+    RR --&gt; C[&quot;选最清晰的一帧&lt;br/&gt;裁出人 + 车区域&quot;]
+    C --&gt; ATTR[&quot;属性模型：上衣、下衣颜色（可选）&quot;]
+    C --&gt; CI[&quot;Chinese-CLIP 图像编码器 → 向量&quot;]
+    C --&gt; RE[&quot;ReID 模型 → 外观特征&lt;br/&gt;跨摄像头合并成全局 ID&quot;]
+    T --&gt; FP[&quot;脚底点 → 标定矩阵&lt;br/&gt;平面图坐标，每秒 1 个点&quot;]
+    ATTR --&gt; DB[(&quot;SQLite&lt;br/&gt;时间 · 类型 · 标签 · 属性 · 向量 · 全局 ID · 轨迹点 · 截图 · 录像&quot;)]
+    CI --&gt; DB
+    RE --&gt; DB
+    FP --&gt; DB
+  end
+  subgraph Q[&quot;查询阶段：用户输入后&quot;]
+    U[&quot;“最近三天穿黑衣服骑车的人”&quot;] --&gt; QW[&quot;Qwen 按查询工具说明解析&lt;br/&gt;输出 JSON 条件&quot;]
+    QW --&gt; SQL[&quot;后端检查字段&lt;br/&gt;SQL 筛选时间和标签&quot;]
+    QW --&gt; CT[&quot;Chinese-CLIP 文字编码器 → 向量&quot;]
+    SQL --&gt; RK[&quot;按相似度排序&quot;]
+    CT --&gt; RK
+    RK --&gt; UI[&quot;页面列出截图和录像&quot;]
+    UI --&gt; TW[&quot;选中一个人：按全局 ID 列出出现过的摄像头&lt;br/&gt;三维场景回放轨迹，停留越久越红&quot;]
+  end
+  DB --&gt; SQL
+</pre></figure>
+<h3 id="sec-4-3">4.3 各组件怎么协作</h3>
+<p><strong>Qwen 怎么知道字段名和取值</strong>：不是训练，是后端调用时附上一份"查询工具说明"（JSON Schema），列出参数名、类型、允许取值和中文含义，再给几个示例。Qwen 看不到数据库，工具说明是自己定义的接口层，后端负责把参数转成查询。</p>
+<pre><code class="language-json">{
+  &quot;name&quot;: &quot;search_alarms&quot;,
+  &quot;parameters&quot;: {
+    &quot;since_days&quot;: {&quot;type&quot;: &quot;integer&quot;, &quot;description&quot;: &quot;最近几天&quot;},
+    &quot;types&quot;: {&quot;type&quot;: &quot;array&quot;, &quot;items&quot;: {&quot;enum&quot;: [&quot;intrusion&quot;, &quot;line_in&quot;, &quot;dwell&quot;, &quot;fall&quot;, &quot;climb&quot;, &quot;smoke&quot;]},
+              &quot;description&quot;: &quot;intrusion=区域入侵，line_in=越线，dwell=逗留，fall=摔倒，climb=翻墙，smoke=抽烟&quot;},
+    &quot;tags&quot;: {&quot;type&quot;: &quot;array&quot;, &quot;items&quot;: {&quot;enum&quot;: [&quot;riding&quot;]}, &quot;description&quot;: &quot;riding=骑自行车或电动车&quot;},
+    &quot;appearance&quot;: {&quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;外观描述原文，如“穿黑色衣服的人”&quot;},
+    &quot;device&quot;: {&quot;type&quot;: &quot;string&quot;, &quot;description&quot;: &quot;摄像头名称&quot;}
+  }
+}
+</code></pre>
+<p><strong>不让大模型直接写 SQL</strong>：小模型容易写错字段，还可能生成危险语句。由后端检查 JSON（类型必须在允许列表里、天数在合理范围），再用 SQLAlchemy 生成带参数的查询：</p>
+<pre><code class="language-python">q = select(Alarm)
+if c.since_days:
+    q = q.where(Alarm.created_at &gt;= datetime.now() - timedelta(days=c.since_days))
+if c.types:
+    q = q.where(Alarm.type.in_([t for t in c.types if t in KNOWN_TYPES]))
+rows = session.scalars(q).all()
+if c.appearance:
+    vec = clip.encode_text(c.appearance)
+    rows = sorted(rows, key=lambda a: -cosine(vec, a.embedding))
+</code></pre>
+<p><strong>CLIP 的作用</strong>：它有图像编码器和文字编码器，把图片和文字转成同一种向量，内容相符的向量接近。YOLO 只负责框出人（不用训练"黑色衣服"类别），CLIP 判断"长什么样"。截图的向量在入库时算好，查询时只算一次文字，比较几万条向量不到一秒。相似度是相对分数，按分数排序取前 N 条，不设固定阈值。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th></th>
+<th>Qwen（纯文字）</th>
+<th>CLIP / Chinese-CLIP</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>输入</td>
+<td>整句话 + 工具说明</td>
+<td>外观描述；截图</td>
+</tr>
+<tr>
+<td>输出</td>
+<td>JSON 条件</td>
+<td>相似度</td>
+</tr>
+<tr>
+<td>要训练吗</td>
+<td>不用，靠提示词</td>
+<td>不用</td>
+</tr>
+</tbody>
+</table></div>
+<p>属性模型和 CLIP 可以配合：属性模型准、快，但只支持固定几种属性；CLIP 能理解任意描述（"背双肩包戴眼镜"），精度差一些。</p>
+<h3 id="sec-4-4">4.4 跨摄像头关联和轨迹复现</h3>
+<p>找到"穿黑衣服骑车的人"之后，还可以再往下一步：列出这个人先后出现在哪几个摄像头，并在三维场景里复现他的移动轨迹，停留越久的路段颜色越红。这部分不靠大模型，靠 ReID、摄像头标定和三维可视化三项技术。</p>
+<figure class="flow"><pre class="mermaid">flowchart TD
+  CAM[&quot;每路摄像头：YOLO → ByteTrack&lt;br/&gt;单路轨迹，换摄像头 ID 就断&quot;] --&gt; RE[&quot;轨迹截图 → ReID 模型&lt;br/&gt;外观特征&quot;]
+  CAM --&gt; FP[&quot;脚底点 → 标定矩阵&lt;br/&gt;平面图坐标 (x, y, 时间)&quot;]
+  RE --&gt; M[&quot;跨摄像头合并&lt;br/&gt;外观相似，且时间、位置说得通&quot;]
+  FP --&gt; M
+  M --&gt; G[&quot;全局 ID&quot;]
+  Q[&quot;查询结果&quot;] --&gt; G
+  G --&gt; REC[&quot;各摄像头的出现记录&lt;br/&gt;时间 · 截图 · 录像&quot;]
+  G --&gt; TW[&quot;三维场景回放轨迹&lt;br/&gt;按停留时间着色：绿 → 黄 → 红&quot;]
+</pre></figure>
+<p><strong>ReID 模型（跨摄像头重识别）</strong>：ByteTrack 只能在一路画面里跟住同一个人，换了摄像头 ID 就断了。ReID 模型把每条轨迹的截图转成外观特征向量，用法和 CLIP 类似，但它专门训练来区分"是不是同一个人、同一辆车"。不同摄像头的两条轨迹，向量接近且时间、位置说得通，就合并成同一个全局 ID。</p>
+<ul>
+<li>行人：OSNet（x0.25 约 20 万参数，x1.0 约 220 万参数）、FastReID 里的模型；车辆：车辆 ReID 模型加车牌识别，有车牌时以车牌为准。</li>
+<li>每条轨迹算 1–3 次，CPU 上每次几毫秒到十几毫秒，开销很小。</li>
+<li>时空约束：两个摄像头之间正常走路至少要多少秒，比这更快出现在另一边的不合并，可以明显减少误配。</li>
+<li>和 CLIP 分工：CLIP 负责从文字描述找到候选，ReID 负责从候选找到同一个人的其他记录。</li>
+<li>准确率的风险：视野不重叠、角度和光照差别大、多人穿着相似时容易认错。页面上给出几个候选让值班人员确认，比全自动合并可靠。</li>
+</ul>
+<p><strong>摄像头标定（画面坐标 → 地面坐标）</strong>：每个摄像头在画面里标 4 个以上地面点（地砖角、车位线角），对应到平面图或地图坐标，用 <code>cv2.findHomography</code> 算出单应矩阵。之后把每个检测框的底边中点（越线规则已经在用的脚底点）乘上这个矩阵，就得到这个人在场地上的位置。所有摄像头换算到同一张平面图上，不同摄像头的轨迹才能接成一条。</p>
+<ul>
+<li>每个摄像头标一次，摄像头被挪动后要重标；需要做一个标定页面，在画面和平面图上各点 4 个点。</li>
+<li>前提是地面平整；有台阶、坡道时要分区域标定。</li>
+<li>视野重叠的区域，同一时刻两路换算出的位置应该接近，可以帮助 ReID 合并。</li>
+<li>各路的时间要对齐：摄像头用 NTP 校时，Worker 已经按帧记录时间戳。</li>
+</ul>
+<p><strong>轨迹存储</strong>：现在只存告警，要复现轨迹就要存每条轨迹的位置序列。按每秒 1 个点抽样，每个点存全局 ID、摄像头、时间、x、y。一个人在画面里待 1 分钟才 60 行，SQLite 足够。</p>
+<p><strong>三维展示和停留着色</strong>：</p>
+<ul>
+<li>场景：先用平面图挤出墙体和道路（2.5D），在地面上画轨迹，演示足够；有 CAD 或 BIM 图纸可以导入，精细建模放到以后。前端用 Three.js（园区、室内）或 Cesium（带经纬度的室外场景）。</li>
+<li>停留着色：把轨迹按相邻两点切成小段，每段的停留时间按它覆盖的小块区域里待了多少秒计算，速度越慢停留越久。按停留时间映射颜色，例如 10 秒以内绿色、10–60 秒黄色、60 秒以上红色，效果和地图上的拥堵路段类似。也可以把场地分成网格，统计每格的累计停留时间，画成热力图。</li>
+<li>回放：拖动时间轴，人或车的标记沿轨迹移动；点击标记，弹出对应摄像头的截图和录像。</li>
+</ul>
+<h3 id="sec-4-5">4.5 多模型串行推理分析</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>模型</th>
+<th>何时运行</th>
+<th>频率</th>
+<th>耗时（CPU 估算）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>视频分析</td>
+<td>yolo11n（人、车）</td>
+<td>每路持续</td>
+<td>每秒 5 次</td>
+<td>约 40 ms/次</td>
+</tr>
+<tr>
+<td>视频分析</td>
+<td>骑行规则</td>
+<td>每次检测后</td>
+<td>同上</td>
+<td>可忽略</td>
+</tr>
+<tr>
+<td>入库</td>
+<td>属性模型</td>
+<td>每条告警 / 轨迹一次</td>
+<td>低</td>
+<td>几毫秒</td>
+</tr>
+<tr>
+<td>入库</td>
+<td>Chinese-CLIP 图像编码器</td>
+<td>每条告警 / 轨迹一次</td>
+<td>低</td>
+<td>约几十毫秒（待实测）</td>
+</tr>
+<tr>
+<td>入库</td>
+<td>ReID 模型（OSNet）</td>
+<td>每条轨迹 1–3 次</td>
+<td>低</td>
+<td>几毫秒到十几毫秒（待实测）</td>
+</tr>
+<tr>
+<td>入库</td>
+<td>标定坐标换算 + 跨摄像头合并</td>
+<td>每秒 1 次 / 每条轨迹结束时</td>
+<td>低</td>
+<td>可忽略</td>
+</tr>
+<tr>
+<td>查询</td>
+<td>Qwen 3B–4B</td>
+<td>用户每次查询</td>
+<td>很低</td>
+<td>约 2–5 秒</td>
+</tr>
+<tr>
+<td>查询</td>
+<td>Chinese-CLIP 文字编码器 + 相似度</td>
+<td>用户每次查询</td>
+<td>很低</td>
+<td>几十毫秒</td>
+</tr>
+<tr>
+<td>展示</td>
+<td>三维场景渲染、轨迹着色</td>
+<td>打开回放时</td>
+<td>很低</td>
+<td>在浏览器里运行，不占服务器</td>
+</tr>
+</tbody>
+</table></div>
+<p>结论：只有 yolo11n 是持续运行的，其他模型要么"每人一次"，要么"每次查询一次"，按顺序串行调用即可，不需要并行，对视频分析几乎没有额外负担。</p>
+<h3 id="sec-4-6">4.6 软硬件环境</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>组件</th>
+<th>选择</th>
+<th>资源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>查询解析</td>
+<td>Ollama + Qwen 3B–4B（INT4）；可联网时也可用在线 API</td>
+<td>内存约 2.5–3 GB，CPU 即可</td>
+</tr>
+<tr>
+<td>外观匹配</td>
+<td>Chinese-CLIP（导出 ONNX 或 OpenVINO）</td>
+<td>内存约 0.5–1 GB，CPU 即可</td>
+</tr>
+<tr>
+<td>属性识别（可选）</td>
+<td>OpenVINO 模型库现成模型</td>
+<td>几十 MB</td>
+</tr>
+<tr>
+<td>跨摄像头重识别</td>
+<td>行人 OSNet / FastReID；车辆 ReID + 车牌识别（导出 ONNX 或 OpenVINO）</td>
+<td>几 MB 到几十 MB，CPU 即可</td>
+</tr>
+<tr>
+<td>摄像头标定</td>
+<td>OpenCV <code>findHomography</code>，新增标定页面</td>
+<td>无需额外资源</td>
+</tr>
+<tr>
+<td>三维展示</td>
+<td>Three.js（园区、室内）或 Cesium（室外、经纬度）</td>
+<td>在浏览器里运行</td>
+</tr>
+<tr>
+<td>向量存储</td>
+<td>SQLite + numpy 逐条比较（几万条以内）；更多时再用 sqlite-vec 或 FAISS</td>
+<td>无需额外服务</td>
+</tr>
+<tr>
+<td>后端</td>
+<td>FastAPI 新增 <code>/api/search</code> 接口</td>
+<td>已有</td>
+</tr>
+<tr>
+<td>前端</td>
+<td>Vue 新增对话框和结果列表</td>
+<td>已有</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>纯文字 Qwen 的资源</strong>（估算，CPU 速度按 i5-13500H + DDR5，未实测）：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>尺寸</th>
+<th>内存（INT4）</th>
+<th>硬盘</th>
+<th>一次查询（纯 CPU）</th>
+<th>解析准确度</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1.5B–1.7B</td>
+<td>约 1–1.5 GB</td>
+<td>约 1 GB</td>
+<td>约 1–3 秒</td>
+<td>简单条件可以</td>
+</tr>
+<tr>
+<td>3B–4B（推荐）</td>
+<td>约 2.5–3 GB</td>
+<td>约 2–2.5 GB</td>
+<td>约 2–5 秒</td>
+<td>配示例和格式约束基本够用</td>
+</tr>
+<tr>
+<td>7B–8B</td>
+<td>约 5 GB</td>
+<td>约 4.5–5 GB</td>
+<td>约 5–10 秒</td>
+<td>更稳</td>
+</tr>
+</tbody>
+</table></div>
+<p>小模型要点：强制 JSON 输出格式（Ollama、llama.cpp 都支持）；关闭 Qwen3 的思考模式；提示词里放几个示例；限制大模型用 4 个线程，避免查询时拖慢视频分析。整套在现有 16 GB 内存的机器上可以和 6 路 Worker 共存（Worker 约 1.6 GB + 模型约 4 GB）。</p>
+<h3 id="sec-4-7">4.7 可行性</h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>部分</th>
+<th>可行性</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>按时间、类型、摄像头查</td>
+<td>高</td>
+<td>现有 <code>alarms</code> 表已有 <code>created_at</code>、<code>type</code>、<code>device_id</code>，现在就能做</td>
+</tr>
+<tr>
+<td>骑车</td>
+<td>中高</td>
+<td>COCO 现成类别 + 重叠规则；侧面、遮挡时可能漏判</td>
+</tr>
+<tr>
+<td>衣服颜色</td>
+<td>中</td>
+<td>白天清晰画面效果好；夜间红外画面是黑白的，没有颜色信息；人太小、逆光会出错</td>
+</tr>
+<tr>
+<td>跨摄像头关联</td>
+<td>中</td>
+<td>车辆有车牌时高；行人在角度、光照差别大或穿着相似时容易认错，要人工确认</td>
+</tr>
+<tr>
+<td>轨迹复现、停留着色</td>
+<td>中高</td>
+<td>每个摄像头要人工标定一次；地面平整时位置误差小，有坡道要分区标定</td>
+</tr>
+<tr>
+<td>三维场景</td>
+<td>中</td>
+<td>平面图挤出（2.5D）工作量小；精细建模要 CAD / BIM 图纸</td>
+</tr>
+<tr>
+<td>自然语言解析</td>
+<td>高</td>
+<td>条件种类有限，3B–4B 配工具说明足够；也可以先做下拉框，以后再加大模型</td>
+</tr>
+</tbody>
+</table></div>
+<p>要提前决定<strong>只搜告警，还是搜所有出现过的人</strong>。只搜告警最简单，但没触发告警的人搜不到，而"骑车"通常不触发告警；搜所有人要每条轨迹存一张截图和向量，数据量大一些但可控。这个场景建议索引全部轨迹。</p>
+<p>还缺的：新增标签、属性、向量字段；骑行规则；ReID 模型、全局 ID 和轨迹表；标定页面；三维回放页面；翻墙、抽烟类型要等动作识别（见完整版第 4 节）做好后才会出现。</p>
+    <footer>源文件：<code>docs/yolo-acceleration-summary.md</code>（ai-vision 仓库）。</footer>
+  </main>
+</div>
+
+<script>
+(function () {
+  // Collapse the index on phones; keep it open on wide screens.
+  var toc = document.getElementById("toc");
+  var narrow = window.matchMedia("(max-width: 980px)");
+  function sync() { if (narrow.matches) toc.removeAttribute("open"); else toc.setAttribute("open", ""); }
+  sync();
+  if (narrow.addEventListener) narrow.addEventListener("change", sync);
+  toc.addEventListener("click", function (e) { if (e.target.tagName === "A" && narrow.matches) toc.removeAttribute("open"); });
+
+  // Highlight the section being read.
+  var links = {};
+  document.querySelectorAll(".index a").forEach(function (a) { links[a.getAttribute("href").slice(1)] = a; });
+  var heads = document.querySelectorAll("main h2[id], main h3[id]");
+  if (!("IntersectionObserver" in window)) return;
+  var current = null;
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) {
+      if (en.isIntersecting && links[en.target.id]) {
+        if (current) current.classList.remove("active");
+        current = links[en.target.id];
+        current.classList.add("active");
+      }
+    });
+  }, { rootMargin: "0px 0px -75% 0px" });
+  heads.forEach(function (h) { io.observe(h); });
+})();
+</script>
+<script src="mermaid.min.js"></script>
+<script>
+(function () {
+  var dark = document.documentElement.dataset.theme === "dark" ||
+    (document.documentElement.dataset.theme !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  mermaid.initialize({ startOnLoad: false, theme: dark ? "dark" : "default", securityLevel: "strict",
+                       flowchart: { htmlLabels: true, useMaxWidth: true } });
+  mermaid.run({ querySelector: "pre.mermaid" });
+})();
+</script>
+</html>

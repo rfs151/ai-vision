@@ -44,6 +44,8 @@ class VideoFeatures(BaseModel):
     roi: bool = False           # ROI 编码: target boxes at a lower QP, background pays under the cap
     skip_static: bool = False   # 画面静止时跳过推理: no YOLO while the picture does not change
     yuv_direct: bool = False    # YUV 直通: draw + encode on yuv420p, convert only frames that are analysed
+    rect_input: bool = False    # 矩形输入: pad only to a multiple of 32 (640x384 for 16:9), not to 640x640
+    int8: bool = False          # INT8 模型: the quantized model (scripts/quantize_int8.py) instead of FP32
     compare: bool = False       # 对比模式: also push a baseline encode (all features off) to ai_ref/
 
 

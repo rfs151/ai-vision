@@ -307,12 +307,12 @@ def test_video_features_saved_served_and_pushed_to_worker(client, monkeypatch):
 
     monkeypatch.setattr(tracks, "_transport", FakeTransport())
     dev = client.post("/api/devices", json={"name": "v", "stream": "vid1"}).json()
-    assert dev["video"] == {"dyn_gop": False, "roi": False, "skip_static": False, "yuv_direct": False, "compare": False}
+    assert dev["video"] == {"dyn_gop": False, "roi": False, "skip_static": False, "yuv_direct": False, "rect_input": False, "int8": False, "compare": False}
     assert "ai_ref/vid1" in dev["play"]["ai_ref"]["webrtc"].replace("app=ai_ref&stream=", "ai_ref/")
 
     # Worker not heard from yet: saved, nothing sent (it polls)
     r = client.put(f"/api/devices/{dev['id']}/video", json={"dyn_gop": True})
-    assert r.json() == {"dyn_gop": True, "roi": False, "skip_static": False, "yuv_direct": False, "compare": False} and sent == []
+    assert r.json() == {"dyn_gop": True, "roi": False, "skip_static": False, "yuv_direct": False, "rect_input": False, "int8": False, "compare": False} and sent == []
     assert client.post(f"/api/devices/{dev['id']}/keyframe").json() == {"sent": False}
 
     tracks.TracksProtocol().datagram_received(json.dumps({"s": "vid1"}).encode(), ("127.0.0.1", 40000))
@@ -320,15 +320,15 @@ def test_video_features_saved_served_and_pushed_to_worker(client, monkeypatch):
     assert client.post(f"/api/devices/{dev['id']}/keyframe").json() == {"sent": True}
     assert sent == [({"cmd": "reload"}, ("127.0.0.1", 40000)), ({"cmd": "keyframe"}, ("127.0.0.1", 40000))]
 
-    assert client.get(f"/api/devices/{dev['id']}").json()["video"] == {"dyn_gop": True, "roi": False, "skip_static": False, "yuv_direct": False, "compare": True}
-    assert client.get("/api/internal/rules/vid1").json()["video"] == {"dyn_gop": True, "roi": False, "skip_static": False, "yuv_direct": False, "compare": True}
+    assert client.get(f"/api/devices/{dev['id']}").json()["video"] == {"dyn_gop": True, "roi": False, "skip_static": False, "yuv_direct": False, "rect_input": False, "int8": False, "compare": True}
+    assert client.get("/api/internal/rules/vid1").json()["video"] == {"dyn_gop": True, "roi": False, "skip_static": False, "yuv_direct": False, "rect_input": False, "int8": False, "compare": True}
 
     from api.db import SessionLocal
     from api.models import Device
     with SessionLocal() as db:                   # row from before the column existed
         db.get(Device, dev["id"]).video = None
         db.commit()
-    assert client.get(f"/api/devices/{dev['id']}").json()["video"] == {"dyn_gop": False, "roi": False, "skip_static": False, "yuv_direct": False, "compare": False}
+    assert client.get(f"/api/devices/{dev['id']}").json()["video"] == {"dyn_gop": False, "roi": False, "skip_static": False, "yuv_direct": False, "rect_input": False, "int8": False, "compare": False}
     assert client.get("/api/internal/rules/vid1").json()["video"] == {}
 
 

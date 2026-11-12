@@ -11,6 +11,7 @@ export default createRouter({
     { path: '/pose', component: () => import('./views/Pose.vue'), meta: { title: '姿态识别' } },
     { path: '/lab', component: () => import('./views/Lab.vue'), meta: { title: '视频实验室' } },
     { path: '/alarms', component: () => import('./views/Alarms.vue'), meta: { title: '告警中心' } },
+    { path: '/docs/:doc?', component: () => import('./views/Docs.vue'), meta: { title: '开发文档' } },
     { path: '/settings', component: () => import('./views/Settings.vue'), meta: { title: '通知设置' } },
   ],
 })

@@ -1,5 +1,8 @@
 <!-- 视频实验室：每路视频单独开关视频功能，并排对比开启前后的差异。
      YUV 直通：Worker 跳过整帧 YUV↔BGR 来回转换（worker/draw.py Yuv420），这里显示每帧转换耗时。
+     矩形输入：推理输入只补到 32 的倍数（16:9 为 640×384），不再补成 640×640。INT8：换用量化后的模型。
+     这两项开着且对比模式开启时，Worker 每 10 次推理用基准（FP32 模型、正方形输入）再算一次同一帧
+     （detector.InferProbe），这里对比耗时和检测结果。
      对比模式下 Worker 额外编码一路「全部功能关闭」的基准流（ai_ref/<流名>），左右同时播放，
      下方曲线同时画两路的码率 / QP，开关切换的时刻画竖线。 -->
 <template>
@@ -74,6 +77,48 @@
             <div><span>Worker CPU</span><b>{{ fmt(stats.cpu, 0) }}</b> %</div>
           </div>
         </div>
+        <div class="feature">
+          <div class="frow">
+            <span class="fname">矩形输入（少算灰边）</span>
+            <el-switch :model-value="feat('rect_input')" :loading="saving === 'rect_input'" @change="v => setFeature('rect_input', v)" />
+          </div>
+          <div class="fdesc">
+            默认每帧缩放后补灰成 640×640 再推理，16:9 画面有 44% 是灰边。开启后只补到 32 的倍数：16:9 输入 640×384，4:3 输入 640×480（不用补边）。
+            人和车缩放后的大小不变，只是少算灰边。不用重新训练；模型要按动态尺寸导出（scripts/export_model.sh）。
+          </div>
+          <div class="fhint">看：<b>单次推理耗时</b>和 <b>Worker CPU</b> 下降；打开<b>对比模式</b>看同一帧的对比（下方）。</div>
+          <div v-if="stats.rect_ok === false" class="fhint warn">当前模型是固定 640×640 导出的，不能改输入尺寸，开关不生效：运行 scripts/export_model.sh 重新导出后重启 Worker。</div>
+          <div class="metrics">
+            <div><span>推理输入</span><b>{{ stats.det_input || '-' }}</b></div>
+            <div><span>单次推理</span><b>{{ fmt(stats.infer_avg_ms, 1) }}</b> ms</div>
+          </div>
+        </div>
+        <div class="feature">
+          <div class="frow">
+            <span class="fname">INT8 量化模型</span>
+            <el-switch :model-value="feat('int8')" :loading="saving === 'int8'" @change="v => setFeature('int8', v)" />
+          </div>
+          <div class="fdesc">
+            模型权重和中间计算从 32 位浮点改成 8 位整数（NNCF 训练后量化，不用重新训练，用样例视频的几百帧做校准），模型约缩小到 1/4。
+            检测头的坐标解码保持浮点。可以和矩形输入同时开。
+          </div>
+          <div class="fhint">看：<b>单次推理耗时</b>和 <b>Worker CPU</b> 下降；对比模式下看<b>检测框一致</b>和<b>置信度变化</b>，确认精度没有明显下降。</div>
+          <div v-if="stats.int8_ok === false" class="fhint warn">没有找到 INT8 模型，开关不生效：运行 .venv-export/bin/python scripts/quantize_int8.py 后重启 Worker。</div>
+          <div class="metrics">
+            <div><span>当前模型</span><b>{{ stats.model || '-' }}</b></div>
+            <div><span>单次推理</span><b>{{ fmt(stats.infer_avg_ms, 1) }}</b> ms</div>
+          </div>
+        </div>
+        <div v-if="stats.probe_n" class="feature probe">
+          <div class="fname">同一帧对比：当前设置 vs 基准</div>
+          <div class="fhint">基准 = FP32 模型 + 640×640 正方形输入。每 10 次推理用基准再算一次同一帧，最近 20 秒的结果：</div>
+          <div class="metrics">
+            <div><span>当前（{{ stats.model }} · {{ stats.det_input }}）</span><b>{{ fmt(stats.probe_ms, 1) }}</b> ms</div>
+            <div><span>基准</span><b>{{ fmt(stats.probe_base_ms, 1) }}</b> ms</div>
+            <div><span>检测框一致</span><b>{{ fmt(stats.probe_found_pct, 0) }}</b> %</div>
+            <div><span>置信度变化</span><b>{{ signed(stats.probe_score_delta, 3) }}</b></div>
+          </div>
+        </div>
         <el-divider />
         <div class="feature">
           <div class="frow">
@@ -122,6 +167,9 @@
                      :series="chartSeries('psnr_roi')" :markers="markers" />
           <LineChart v-if="dev.video.compare" title="背景 PSNR（dB）" unit="dB" :digits="1" :zero="false"
                      :series="chartSeries('psnr_bg')" :markers="markers" />
+          <LineChart title="单次推理耗时（最近 20 秒平均）" unit="ms" :digits="1" :series="mainSeries('infer_avg_ms', '推理')" :markers="markers" />
+          <LineChart v-if="history.some(h => h.main?.probe_n)" title="同一帧推理耗时：当前设置 vs 基准（FP32 + 正方形）" unit="ms" :digits="1"
+                     :series="probeSeries" :markers="markers" />
           <LineChart title="每秒推理次数" unit="次/秒" :digits="1" :series="mainSeries('infer_per_s', '推理')" :markers="markers" />
           <LineChart title="每帧颜色转换（解码后 + 编码前，不含对比编码）" unit="ms" :digits="2" :series="mainSeries('conv_ms', '转换')" :markers="markers" />
           <LineChart title="Worker CPU" unit="%" :series="mainSeries('cpu', 'CPU')" :markers="markers" />
@@ -145,7 +193,7 @@ import { api } from '../api'
 
 const ON = '#3987e5'      // feature stream (validated pair for the dark surface)
 const REF = '#d95926'     // baseline stream
-const FEATURE_NAMES = { dyn_gop: '动态关键帧', roi: 'ROI 编码', skip_static: '跳过静止', yuv_direct: 'YUV 直通', compare: '对比模式' }
+const FEATURE_NAMES = { dyn_gop: '动态关键帧', roi: 'ROI 编码', skip_static: '跳过静止', yuv_direct: 'YUV 直通', rect_input: '矩形输入', int8: 'INT8', compare: '对比模式' }
 const REASONS = { gop: '定时', viewer: '有人播放', activity: '目标出现', alarm: '告警', x264: '编码器' }
 
 const devices = computed(() => store.devices.filter(d => d.online && d.ai_enabled))
@@ -224,6 +272,11 @@ const chartSeries = key => {
 
 // Worker-wide numbers (not per output stream): one series
 const mainSeries = (key, name) => [{ name, color: ON, points: history.value.map(h => ({ t: h.t, v: h.main?.[key] })) }]
+// rect_input probe: both inputs on the same frames
+const probeSeries = computed(() => [
+  { name: '当前设置', color: ON, points: history.value.map(h => ({ t: h.t, v: h.main?.probe_ms })) },
+  { name: '基准', color: REF, points: history.value.map(h => ({ t: h.t, v: h.main?.probe_base_ms })) },
+])
 
 // Plain-language summary of the last minute, only while both streams have data
 const verdict = computed(() => {
@@ -251,6 +304,13 @@ const verdict = computed(() => {
       : `平均 QP ${d > 0 ? '低' : '高'} ${Math.abs(d).toFixed(1)}（${qp[0].toFixed(1)} / ${qp[1].toFixed(1)}），画质${d > 0 ? '更好' : '更差'}`)
   }
   if (ki[0] != null && ki[1] != null) lines.push(`关键帧间隔 ${ki[0].toFixed(1)} / ${ki[1].toFixed(1)} 秒`)
+  const sq = avg('main', 'probe_base_ms'), rc = avg('main', 'probe_ms')
+  if (sq && rc != null) {
+    const found = avg('main', 'probe_found_pct'), ds = avg('main', 'probe_score_delta')
+    const cur = [dev.value?.video.rect_input && '矩形输入', dev.value?.video.int8 && 'INT8'].filter(Boolean).join(' + ')
+    lines.push(`${cur}：同一帧推理 ${sq.toFixed(1)} → ${rc.toFixed(1)} ms（少 ${((1 - rc / sq) * 100).toFixed(0)}%）` +
+      (found != null ? `，检测框一致 ${found.toFixed(0)}%` : '') + (ds != null ? `，置信度 ${ds >= 0 ? '+' : ''}${ds.toFixed(3)}` : ''))
+  }
   for (const [k, name] of [['psnr_roi', '目标区域'], ['psnr_bg', '背景']]) {
     const v = [avg('main', k), avg('ref', k)]
     if (v[0] == null || v[1] == null) continue
@@ -297,6 +357,7 @@ function replay() {
 const onFirstFrame = (key, ms) => { startup[key] = ms }
 
 const fmt = (v, d) => (v == null ? '-' : Number(v).toFixed(d))
+const signed = (v, d) => (v == null ? '-' : `${v >= 0 ? '+' : ''}${Number(v).toFixed(d)}`)
 const reasons = r => (r && Object.keys(r).length
   ? Object.entries(r).map(([k, n]) => `${REASONS[k] || k}×${n}`).join('  ') : '-')
 </script>
@@ -312,6 +373,9 @@ const reasons = r => (r && Object.keys(r).length
 .fdesc { color: var(--el-text-color-regular); line-height: 1.6; }
 .fhint { color: var(--el-text-color-secondary); line-height: 1.6; margin-top: 6px; font-size: 12px; }
 .more { font-size: 12px; }
+.warn { color: var(--el-color-warning); }
+.probe { background: var(--el-fill-color-light); border-radius: 4px; padding: 10px; }
+.probe .fname { margin-bottom: 4px; }
 .verdict { background: var(--el-fill-color-light); border-radius: 4px; padding: 10px; line-height: 1.8; color: var(--el-text-color-regular); }
 .vtitle { font-weight: 600; color: var(--el-text-color-primary); }
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }

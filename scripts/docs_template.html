@@ -1,0 +1,215 @@
+<title>{{PAGE_TITLE}}</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap">
+<style>
+/* Layout: engineering field manual. Sticky section index on the left, one reading column on the right;
+   diagrams and tables sit on a faint "monitor grid" plate. */
+:root {
+  --bg: #f4f6f7;
+  --surface: #ffffff;
+  --plate: #eef2f3;
+  --fg: #1a2127;
+  --muted: #56636e;
+  --line: #d8dee2;
+  --accent: #0d6a75;
+  --accent-soft: #dcefF1;
+  --amber: #a35f00;
+  --font-display: "Space Grotesk", "Noto Sans SC", system-ui, sans-serif;
+  --font-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "Sarasa Mono SC", "Noto Sans Mono CJK SC", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1316; --surface: #151b1f; --plate: #1a2227; --fg: #e3e8eb; --muted: #97a3ad;
+    --line: #2a343b; --accent: #5ab8c3; --accent-soft: #163338; --amber: #e3a54a; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1316; --surface: #151b1f; --plate: #1a2227; --fg: #e3e8eb; --muted: #97a3ad;
+  --line: #2a343b; --accent: #5ab8c3; --accent-soft: #163338; --amber: #e3a54a; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: var(--font-body); font-size: 15.5px; line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-underline-offset: 3px; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+/* ---------- header ---------- */
+.masthead { border-bottom: 1px solid var(--line); background: var(--surface); }
+.masthead-inner {
+  max-width: 1240px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 40px 32px;
+}
+.eyebrow {
+  font-family: var(--font-mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted); display: flex; flex-wrap: wrap; gap: 6px 18px;
+}
+.eyebrow span::before { content: "▸ "; color: var(--accent); }
+h1 {
+  font-family: var(--font-display); font-weight: 700; font-size: clamp(28px, 4.2vw, 42px);
+  line-height: 1.2; margin: 14px 0 16px; text-wrap: balance; letter-spacing: -.01em;
+}
+.intro { max-width: 72ch; color: var(--muted); }
+.intro p { margin: 0 0 8px; }
+.intro code { color: var(--fg); }
+
+/* ---------- page grid ---------- */
+.page {
+  max-width: 1240px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 28px 80px;
+  display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 48px;
+}
+.index { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 20px); align-self: start;
+  max-height: calc(100vh - 40px); overflow-y: auto; font-size: 13.5px; line-height: 1.5; }
+.index summary { display: none; }
+.index-title { font-family: var(--font-mono); font-size: 11.5px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--muted); margin: 0 0 10px; }
+.index ol { list-style: none; margin: 0; padding: 0; }
+.index > details > ol > li { margin-bottom: 6px; }
+.index > details > ol > li > a { font-weight: 500; color: var(--fg); }
+.index ol ol { margin: 4px 0 8px 10px; padding-left: 10px; border-left: 1px solid var(--line); }
+.index ol ol a { color: var(--muted); font-size: 12.5px; }
+.index a { display: block; padding: 2px 6px; border-radius: 4px; text-decoration: none; }
+.index a:hover { background: var(--plate); }
+.index a.active { color: var(--accent); background: var(--accent-soft); }
+
+main { min-width: 0; max-width: 900px; }
+
+/* ---------- content ---------- */
+main h2 {
+  font-family: var(--font-display); font-size: 25px; font-weight: 700; line-height: 1.3;
+  margin: 56px 0 18px; padding-top: 18px; border-top: 2px solid var(--fg); text-wrap: balance;
+  scroll-margin-top: 16px;
+}
+main h2:first-child { margin-top: 0; }
+main h3 {
+  font-family: var(--font-display); font-size: 18.5px; font-weight: 600; margin: 36px 0 12px;
+  text-wrap: balance; scroll-margin-top: 16px;
+}
+main p, main li { max-width: 74ch; }
+main p { margin: 0 0 14px; }
+main ul, main ol { margin: 0 0 16px; padding-left: 1.4em; }
+main li { margin-bottom: 6px; }
+main li::marker { color: var(--accent); }
+strong { font-weight: 700; }
+code {
+  font-family: var(--font-mono); font-size: .86em; background: var(--plate);
+  padding: .1em .38em; border-radius: 4px; overflow-wrap: anywhere;
+}
+
+/* tables */
+.table-wrap { overflow-x: auto; margin: 6px 0 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; line-height: 1.6; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); min-width: 6em; }
+th { background: var(--plate); font-weight: 700; white-space: nowrap; font-size: 12.5px; letter-spacing: .02em; }
+tr:last-child td { border-bottom: 0; }
+td code { white-space: nowrap; }
+
+/* code + ASCII diagrams */
+pre {
+  margin: 6px 0 22px; padding: 16px 18px; overflow-x: auto; border-radius: 8px;
+  font-family: var(--font-mono); font-size: 12.8px; line-height: 1.65;
+  background: var(--surface); border: 1px solid var(--line);
+}
+pre code { background: none; padding: 0; font-size: inherit; overflow-wrap: normal; white-space: pre; }
+pre.ascii {
+  background-color: var(--plate);
+  background-image:
+    linear-gradient(var(--line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--line) 1px, transparent 1px);
+  background-size: 22px 22px; background-position: -1px -1px;
+  border-left: 3px solid var(--accent);
+}
+pre.ascii code { background: var(--plate); box-shadow: 0 0 0 4px var(--plate); }
+
+/* mermaid flow charts */
+figure.flow {
+  margin: 8px 0 24px; padding: 18px 12px; overflow-x: auto; border-radius: 8px;
+  background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+}
+figure.flow pre.mermaid { margin: 0; padding: 0; border: 0; background: none; text-align: center; font-family: var(--font-body); }
+
+/* note about estimates */
+.legend {
+  margin: 18px 0 0; padding: 10px 14px; border-radius: 8px; font-size: 13.5px;
+  background: var(--accent-soft); color: var(--fg); max-width: 74ch;
+}
+.legend b { color: var(--amber); }
+
+footer { color: var(--muted); font-size: 12.5px; margin-top: 56px; padding-top: 16px; border-top: 1px solid var(--line); }
+
+/* ---------- narrow screens ---------- */
+@media (max-width: 980px) {
+  .page { grid-template-columns: minmax(0, 1fr); gap: 18px; padding-block: 18px 64px; }
+  .index { position: static; max-height: none; background: var(--surface); border: 1px solid var(--line);
+    border-radius: 8px; padding: 10px 12px; }
+  .index summary { display: list-item; cursor: pointer; font-weight: 700; font-size: 14px; }
+  .index-title { display: none; }
+  .index > details > ol { margin-top: 10px; }
+  main h2 { font-size: 22px; margin-top: 44px; }
+}
+</style>
+
+<header class="masthead">
+  <div class="masthead-inner">
+    <div class="eyebrow"><span>ai-vision</span><span>i5-13500H · OpenVINO · yolo11n</span><span>2026-11-11</span></div>
+    <h1>{{TITLE}}</h1>
+    <div class="intro">{{INTRO}}</div>
+    <p class="legend">图例：表中 <b>估算</b>、<b>待实测</b> 的数字没有在本项目上测过；标注"实测"或来自 README 的数字是本机实测。</p>
+  </div>
+</header>
+
+<div class="page">
+  <nav class="index" aria-label="目录">
+    <details id="toc" open>
+      <summary>目录</summary>
+      <p class="index-title">目录</p>
+      {{TOC}}
+    </details>
+  </nav>
+  <main id="content">
+    {{BODY}}
+    <footer>源文件：<code>{{SRC}}</code>（ai-vision 仓库）。</footer>
+  </main>
+</div>
+
+<script>
+(function () {
+  // Collapse the index on phones; keep it open on wide screens.
+  var toc = document.getElementById("toc");
+  var narrow = window.matchMedia("(max-width: 980px)");
+  function sync() { if (narrow.matches) toc.removeAttribute("open"); else toc.setAttribute("open", ""); }
+  sync();
+  if (narrow.addEventListener) narrow.addEventListener("change", sync);
+  toc.addEventListener("click", function (e) { if (e.target.tagName === "A" && narrow.matches) toc.removeAttribute("open"); });
+
+  // Highlight the section being read.
+  var links = {};
+  document.querySelectorAll(".index a").forEach(function (a) { links[a.getAttribute("href").slice(1)] = a; });
+  var heads = document.querySelectorAll("main h2[id], main h3[id]");
+  if (!("IntersectionObserver" in window)) return;
+  var current = null;
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) {
+      if (en.isIntersecting && links[en.target.id]) {
+        if (current) current.classList.remove("active");
+        current = links[en.target.id];
+        current.classList.add("active");
+      }
+    });
+  }, { rootMargin: "0px 0px -75% 0px" });
+  heads.forEach(function (h) { io.observe(h); });
+})();
+</script>

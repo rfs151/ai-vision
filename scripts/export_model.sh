@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Export YOLO to OpenVINO (one time). Uses a separate venv so the runtime stays torch-free.
 # Usage: scripts/export_model.sh [yolo11n]
+# dynamic=True: the input size can be changed at load time (rectangular input, see worker/detector.py)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 MODEL=${1:-yolo11n}
@@ -17,5 +18,5 @@ TV_VER=${TV_VER:-0.29.1}
 # ultralytics may auto-install extra deps via pip; keep them on the same mirror
 export PIP_INDEX_URL="$PIP_INDEX"
 cd worker/models
-../../.venv-export/bin/yolo export model="$MODEL.pt" format=openvino imgsz=640 half=False
+../../.venv-export/bin/yolo export model="$MODEL.pt" format=openvino imgsz=640 half=False dynamic=True
 ls -d "${MODEL}_openvino_model"
