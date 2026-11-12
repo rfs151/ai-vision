@@ -81,7 +81,7 @@ MERMAID = {
     FP --> DB
   end
   subgraph Q["查询阶段：用户输入后"]
-    U["“最近三天穿黑衣服骑车的人”"] --> QW["Qwen 按查询工具说明解析<br/>输出 JSON 条件"]
+    U["“最近三天穿黑衣服骑车的人”"] --> QW["DeepSeek API（或本地 Qwen）<br/>按查询工具说明解析，输出 JSON 条件"]
     QW --> SQL["后端检查字段<br/>SQL 筛选时间和标签"]
     QW --> CT["Chinese-CLIP 文字编码器 → 向量"]
     SQL --> RK["按相似度排序"]
