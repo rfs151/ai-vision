@@ -432,6 +432,7 @@ Vue3 + Vite + Element Plus。构建后由控制服务提供页面，整个系统
 
 | 页面 | 功能 |
 |---|---|
+| AI 查询 | 用一句话找人找车（如"超市里穿绿色外套的顾客"），显示解析出的条件和按外观相似度排序的截图，点开看原画面和出现次数；监控大屏顶部也有查询框（见 5.10） |
 | 监控大屏 | 1/4/9 分屏；AI 画面 / 原始 + 前端画框 / 原始画面；WebRTC 或 HTTP-fMP4；每格显示帧率、推理耗时、目标数、区域人数、越线计数；右侧实时告警；新告警时对应画面边框闪红 |
 | 设备管理 | 设备增删改（推流设备或摄像头拉流地址）；开关 AI 分析；Worker 状态、重启或停止 |
 | 规则配置 | **在实时画面上直接画**区域（多边形）和越线；拖动顶点、整体移动、双击边线插入顶点、右键删除顶点；越线可以反转方向；保存后热更新 |
@@ -582,6 +583,26 @@ Worker 每次检测后 ──UDP──> API（与 HTTP 同端口号，只监听 
 **要识别其他姿态**（举手、蹲下、打架等），按难度递增：① 在关键点上写规则（如手腕高于肩膀 = 举手），不用训练；② 用 pose 模型批量提取关键点，按片段打标签（不用画点），训练一个小分类器；③ 把姿态当类别（如 `fallen`），用 LabelImg 画框训练检测模型。只有官方 17 个点不够用（如特殊视角、非人体的点）时才需要自己标关键点，工具用 X-AnyLabeling（可先用 pose 模型自动标再修正）或 CVAT，YOLO pose 标注格式为每人一行 `类别 cx cy w h x1 y1 v1 … x17 y17 v17`。
 
 测试：`tests/test_fall.py`（姿态判断、快速 / 缓慢倒地、马上站起、换编号继承、规则引擎集成）。
+
+### 5.10 AI 查询：一句话找人找车
+
+```
+入库：Worker 每条轨迹留一张最清晰的截图（worker/sightings.py）──轨迹结束──> POST /api/internal/sightings
+        └─ API 后台线程：Chinese-CLIP 图像编码 → 512 维向量；同一路、同类别、6 小时内相似度 ≥ 0.93 的合并（次数 +1）
+查询："超市里穿绿色外套的顾客"
+        └─ DeepSeek 工具调用（没有 Key 或调用失败时用规则解析）→ {devices: [store], classes: [person], appearance: 穿绿色外套的人}
+             └─ SQL 按时间、摄像头、类别、标签筛选 → CLIP 文字向量和截图向量比相似度 → 排序
+```
+
+- **只发文字给大模型**：DeepSeek 只收到问题原文和摄像头列表（含中文叫法，如 store = 超市），截图、向量都留在本机；大模型只返回 JSON 参数，后端逐项检查后再查库，不让它写 SQL。
+- **搜的是所有出现过的人和车**，不只是告警：每条轨迹（人、小汽车、货车、公交、摩托车）一条记录。人骑在自行车或摩托车上的帧超过 40% 时打"骑行"标签。
+- **循环播放的演示视频**：同一个人每轮都会出现，按外观向量合并成一条，显示"×次数"和最近出现时间；时间条件按真实时间筛选（"最近 10 分钟""今天"）。
+- **外观描述改写成"……的人"**：CLIP 对"穿绿色外套的人"比"穿绿色外套的顾客"准得多（store 实测：绿外套的人从第 3、4 名升到第 1、2 名），顾客、行人、工人等统一换成"人"。
+- **模型**：`.venv-export/bin/python scripts/export_clip.py` 导出 Chinese-CLIP ViT-B/16（OpenVINO，权重 INT8 压缩，共 190 MB，向量和原模型余弦相似度 0.999），放在 `worker/models/chinese-clip-vit-b16/`；没有模型时查询照常，只是不用外观条件。API 首次用到时才加载，两个编码器约占 0.5 GB 内存；截图编码在后台线程里排队，每张 0.1–0.3 秒。
+- **配置**：`.env` 里填 `DEEPSEEK_API_KEY`（可改 `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL` 换成通义千问或本地 Ollama）；记录保留 `SIGHTING_KEEP_DAYS` 天（默认 3）。摄像头的中文叫法在 `api/search.py` 的 `CAMERA_HINTS`，也可以用环境变量 `SEARCH_CAMERAS`（JSON）补充。
+- **局限**：只看衣着颜色、款式、配饰这类外观；橄榄绿和棕色这类相近颜色容易混；人挤在一起时截图里会带上旁边的人；夜间红外画面没有颜色。
+
+测试：`tests/test_search.py`（规则解析、DeepSeek 工具调用、字段检查、入库合并和外观排序、Worker 端挑图和骑行标签）；浏览器端 `web/e2e/searchtest.mjs`（监控大屏查询框 → 查询页 → 结果卡片和详情）。
 
 ---
 
@@ -985,7 +1006,31 @@ docker builder prune -f                  # 可选：清理构建缓存
 - 页面上关闭了 AI 的设备不会自动启动 Worker，要在「设备管理」里打开。
 - 演示完建议修改服务器 root 密码，改用 SSH 密钥登录。
 
-### 8.7 磁盘占用
+### 8.7 CI/CD：Jenkins（按需启动）
+
+流水线写在仓库根目录的 `Jenkinsfile`，Jenkins 本身在 `ci/jenkins/`（Docker）。Jenkins 常驻约 0.5–1 GB 内存，所以不随演示启动，用时再开：
+
+```bash
+ci/jenkins/ctl.sh up       # 第一次会构建镜像；打印地址 http://127.0.0.1:8070/ 和 admin 密码
+ci/jenkins/ctl.sh down     # 用完停掉（任务和构建记录保存在 volume 里）
+ci/jenkins/ctl.sh build    # 改了 Dockerfile / plugins.txt 后重建镜像（up 只在第一次构建）
+```
+
+| 阶段 | 内容 |
+|---|---|
+| 准备环境 | 链接本机的模型和样例视频（不在 git 里，只读挂载）；Python 依赖装在缓存的 venv 里，requirements.txt 变了才重装 |
+| 单元测试 | `pytest tests`（100 个），结果以 JUnit 报告展示 |
+| 构建前端 | `npm ci && vite build`，`web/dist` 存为构建产物 |
+| 部署 | 勾选 `DEPLOY` 才执行：通过 ssh 调用本机 `scripts/deploy.sh`（快进拉取 → 依赖变了才 pip install → 构建前端 → 重启 ai-vision-api → 健康检查） |
+| 冒烟测试 | 检查 `/api/system`、设备列表、AI 查询接口和前端页面 |
+
+- 触发：每 5 分钟检查一次 GitHub 的 main 分支，有新提交就构建；也可以在页面上点 "Build with Parameters" 手动运行。
+- 配置即代码：管理员账号和 `ai-vision` 任务由 `ci/jenkins/casc.yaml` 生成，没有安装向导。
+- 部署权限：`ci/jenkins/ctl.sh enable-deploy` 生成一把 Jenkins 专用的 ssh key，在 `authorized_keys` 里限定它只能执行 `scripts/deploy.sh`（不能开 shell、不能转发）；`disable-deploy` 撤销。
+
+实测（本机）：首次构建约 14 分钟（主要是安装 openvino 等依赖），之后约 30 秒。
+
+### 8.8 磁盘占用
 
 | 位置 | 增长 | 上限 / 清理方式 |
 |---|---|---|

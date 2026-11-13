@@ -1,0 +1,33 @@
+# Jenkins on demand: ci/jenkins/ctl.sh up | down. Not started with the demo (about 0.6-1 GB RAM).
+services:
+  jenkins:
+    build:
+      context: .
+      args:
+        REGISTRY: ${JENKINS_REGISTRY:-}
+        APT_MIRROR: ${APT_MIRROR:-}
+        JENKINS_UC_DOWNLOAD: ${JENKINS_UC_DOWNLOAD:-}
+    image: ai-vision-jenkins:lts
+    restart: "no"                       # never comes back by itself after a reboot
+    ports:
+      - "127.0.0.1:8070:8080"           # local only (WSL forwards it to the Windows browser)
+    environment:
+      JAVA_OPTS: "-Xmx512m -Djenkins.install.runSetupWizard=false"
+      CASC_JENKINS_CONFIG: /var/jenkins_home/casc.yaml
+      JENKINS_ADMIN_PASSWORD: ${JENKINS_ADMIN_PASSWORD:?run ci/jenkins/ctl.sh up}
+      REPO_URL: ${REPO_URL:-https://github.com/rfs151/ai-vision.git}
+      PIP_INDEX_URL: ${PIP_INDEX:-}
+      NPM_CONFIG_REGISTRY: ${NPM_REGISTRY:-}
+      DEPLOY_HOST: host.docker.internal
+      DEPLOY_PORT: ${DEPLOY_PORT:-2212}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - ./casc.yaml:/var/jenkins_home/casc.yaml:ro
+      - ./secrets:/var/jenkins_home/deploy:ro           # deploy key (ctl.sh enable-deploy)
+      - ../../worker/models:/models:ro                   # YOLO / CLIP models for the tests (gitignored)
+      - ../../data/samples:/samples:ro                   # sample videos for the model tests (gitignored)
+    mem_limit: 1536m
+volumes:
+  jenkins_home:

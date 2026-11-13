@@ -1,0 +1,35 @@
+# Configuration as Code: no setup wizard, one admin user, one pipeline job (the repo's Jenkinsfile).
+jenkins:
+  systemMessage: "ai-vision CI/CD（按需启动：ci/jenkins/ctl.sh up / down）"
+  numExecutors: 1
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: admin
+          password: "${JENKINS_ADMIN_PASSWORD}"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+unclassified:
+  location:
+    url: "http://127.0.0.1:8070/"
+jobs:
+  - script: >
+      pipelineJob('ai-vision') {
+        description('ai-vision：单元测试 → 构建前端 → 部署到本机（勾选 DEPLOY）→ 冒烟测试。流程定义在仓库根目录的 Jenkinsfile。')
+        logRotator { numToKeep(20) }
+        properties { pipelineTriggers { triggers { pollSCM { scmpoll_spec('H/5 * * * *') } } } }
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote { url('${REPO_URL}') }
+                branch('*/main')
+              }
+            }
+            scriptPath('Jenkinsfile')
+            lightweight(true)
+          }
+        }
+      }
