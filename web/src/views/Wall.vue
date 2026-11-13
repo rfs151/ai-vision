@@ -1,6 +1,14 @@
 <template>
   <div class="wall">
     <div class="main">
+      <form class="ai-bar" @submit.prevent="aiSearch">
+        <span class="ai-label"><el-icon><MagicStick /></el-icon>AI 查询</span>
+        <input v-model="aiText" placeholder="用一句话找人找车，例如：超市里穿绿色外套的顾客" />
+        <button type="submit">查询</button>
+        <span class="ai-ex">
+          <a v-for="e in AI_EXAMPLES" :key="e" @click="aiText = e; aiSearch()">{{ e }}</a>
+        </span>
+      </form>
       <div class="toolbar">
         <el-radio-group v-model="layout" size="small">
           <el-radio-button :value="1">1 画面</el-radio-button>
@@ -73,6 +81,14 @@
 </template>
 
 <script setup>
+import { MagicStick } from '@element-plus/icons-vue'
+import { useRouter as useAiRouter } from 'vue-router'
+const AI_EXAMPLES = ['超市里穿绿色外套的顾客', '超市里戴帽子的男人']
+const aiRouter = useAiRouter()
+const aiText = ref('')
+function aiSearch() {
+  aiRouter.push({ path: '/search', query: aiText.value.trim() ? { q: aiText.value.trim() } : {} })
+}
 import { computed, reactive, ref, watch } from 'vue'
 import Player from '../components/Player.vue'
 import AlarmDialog from '../components/AlarmDialog.vue'
@@ -156,4 +172,17 @@ watch(() => store.lastAlarm, la => {
 .alarm:hover { background: var(--el-fill-color-light); }
 .thumb { width: 96px; height: 64px; border-radius: 3px; flex-shrink: 0; }
 .info { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ai-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; padding: 6px 6px 6px 14px; border-radius: 22px;
+  border: 1px solid transparent; flex-wrap: wrap;
+  background: linear-gradient(var(--el-bg-color), var(--el-bg-color)) padding-box,
+              linear-gradient(90deg, #409eff, #955cff) border-box; }
+.ai-label { display: flex; align-items: center; gap: 4px; font-weight: 600; white-space: nowrap;
+  background: linear-gradient(90deg, #79bbff, #b48cff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.ai-label .el-icon { color: #79bbff; }
+.ai-bar input { flex: 1; min-width: 200px; background: none; border: 0; outline: none; color: var(--el-text-color-primary); font-size: 14px; }
+.ai-bar button { border: 0; border-radius: 16px; padding: 6px 18px; color: #fff; cursor: pointer;
+  background: linear-gradient(90deg, #409eff, #955cff); }
+.ai-ex { display: flex; gap: 10px; font-size: 12px; }
+.ai-ex a { color: var(--el-text-color-secondary); cursor: pointer; }
+.ai-ex a:hover { color: var(--el-color-primary); }
 </style>

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from api import search
 from api.config import settings
 from api.db import get_db
 from api.hub import hub
@@ -76,6 +77,26 @@ async def ingest_alarm(event: str = Form(...), snapshot: UploadFile | None = Fil
     hub.publish("alarm", out.model_dump(mode="json"))
     notifier.alarm(out, dev.name, settings.data_dir / rel if rel else None)
     return {"id": a.id}
+
+
+@router.post("/sightings", status_code=202)
+async def ingest_sighting(meta: str = Form(...), crop: UploadFile = File(...), frame: UploadFile | None = File(None),
+                          db: Session = Depends(get_db)):
+    """AI 查询: a tracked person / vehicle (worker/sightings.py). Files now, CLIP vector in background."""
+    m = json.loads(meta)
+    dev = device_by_stream(db, m["stream"])
+    stamp = f"{time.strftime('%H%M%S')}_{int(time.time() * 1000) % 1000:03d}_{re.sub(r'[^a-z]', '', m.get('cls', ''))}"
+    base = f"sightings/{dev.stream}/{time.strftime('%Y%m%d')}/{stamp}"
+    rels = {}
+    for key, f in (("crop", crop), ("frame", frame)):
+        if f is None:
+            continue
+        rels[key] = f"{base}_{key}.jpg"
+        path = settings.data_dir / rels[key]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(await f.read())
+    search.enqueue(dev.id, m, rels["crop"], rels.get("frame"))
+    return {"queued": True}
 
 
 @router.post("/clips", status_code=201)

@@ -18,8 +18,9 @@ from api.hub import hub
 from api.manager import manager
 from api.models import Device
 from api.notify import notifier
-from api import retention, tracks
+from api import retention, search, tracks
 from api.routers import alarms, devices, hooks, internal, notify, streams
+from api.routers import search as search_router
 from api.zlm import ZLM
 
 log = logging.getLogger("main")
@@ -96,6 +97,7 @@ async def lifespan(app: FastAPI):
     await sync_with_zlm(app)
     rec = asyncio.create_task(reconcile_loop(app))
     udp = await tracks.start()
+    search.start()
     ret = asyncio.create_task(retention.loop())
     yield
     ret.cancel()
@@ -128,6 +130,7 @@ app.include_router(hooks.router)
 app.include_router(internal.router)
 app.include_router(notify.router)
 app.include_router(streams.router)
+app.include_router(search_router.router)
 app.mount("/media", StaticFiles(directory=settings.data_dir), name="media")
 
 

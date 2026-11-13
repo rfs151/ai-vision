@@ -5,6 +5,7 @@ export default createRouter({
   history: createWebHashHistory(),
   routes: [
     { path: '/', redirect: '/wall' },
+    { path: '/search', component: () => import('./views/Search.vue'), meta: { title: 'AI 查询' } },
     { path: '/wall', component: () => import('./views/Wall.vue'), meta: { title: '监控大屏' } },
     { path: '/devices', component: () => import('./views/Devices.vue'), meta: { title: '设备管理' } },
     { path: '/rules/:id?', component: () => import('./views/Rules.vue'), meta: { title: '规则配置' } },

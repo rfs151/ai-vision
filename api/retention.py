@@ -117,4 +117,11 @@ async def loop(interval: float = INTERVAL):
             await asyncio.to_thread(clean)
         except Exception:
             log.exception("media cleanup failed")
+        try:
+            from api import search
+            n = await asyncio.to_thread(search.prune)
+            if n:
+                log.info("removed %d sightings older than %s days", n, search.settings.sighting_keep_days)
+        except Exception:
+            log.exception("sighting cleanup failed")
         await asyncio.sleep(interval)

@@ -22,6 +22,18 @@ def _zlm_secret():
     return ""
 
 
+def _dotenv(key, default=""):
+    """Env var, else the line in ROOT/.env (the systemd service does not load .env; Docker does)."""
+    if os.getenv(key):
+        return os.environ[key]
+    f = ROOT / ".env"
+    if f.exists():
+        for line in f.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if line.startswith(key + "="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'") or default
+    return default
+
+
 class Settings:
     data_dir = Path(os.getenv("DATA_DIR", ROOT / "data"))
     db_url = os.getenv("DB_URL", f"sqlite:///{data_dir / 'ai-vision.db'}")
@@ -50,6 +62,12 @@ class Settings:
     # lives under data/ so the demo container (Docker) sees it too.
     streams_conf = Path(os.getenv("STREAMS_CONF", ROOT / "scripts" / "streams.conf"))
     streams_selection = Path(os.getenv("STREAMS_SELECTION", data_dir / "streams.enabled"))
+    # AI 查询: DeepSeek (any OpenAI-compatible API, e.g. a local Ollama) parses the question into
+    # search conditions; without a key a rule parser does it. Sightings older than N days are deleted.
+    llm_api_key = _dotenv("DEEPSEEK_API_KEY")
+    llm_base_url = _dotenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    llm_model = _dotenv("DEEPSEEK_MODEL", "deepseek-flash")   # same default as ai-agent
+    sighting_keep_days = float(os.getenv("SIGHTING_KEEP_DAYS", "3"))
 
 
 settings = Settings()

@@ -6,6 +6,7 @@
         ai-vision
       </div>
       <el-menu :default-active="activeMenu" router>
+        <el-menu-item index="/search" class="ai-entry"><el-icon><MagicStick /></el-icon>AI 查询<span class="new">NEW</span></el-menu-item>
         <el-menu-item index="/wall"><el-icon><Monitor /></el-icon>监控大屏</el-menu-item>
         <el-menu-item index="/devices"><el-icon><VideoCamera /></el-icon>设备管理</el-menu-item>
         <el-menu-item index="/rules"><el-icon><EditPen /></el-icon>规则配置</el-menu-item>
@@ -30,7 +31,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElNotification } from 'element-plus'
-import { Bell, DataLine, Document, EditPen, Monitor, Promotion, User, VideoCamera } from '@element-plus/icons-vue'
+import { Bell, DataLine, Document, EditPen, MagicStick, Monitor, Promotion, User, VideoCamera } from '@element-plus/icons-vue'
 import { connectWS, loadDevices, loadRecentAlarms, store } from './store'
 import { ALARM_TYPES } from './api'
 import { startIdleWatch } from './idle'
@@ -70,4 +71,7 @@ onMounted(() => {
 .dot.on { background: #67c23a; }
 .badge { margin-left: 8px; }
 .foot { padding: 12px 20px; }
+.ai-entry { font-weight: 600; background: linear-gradient(90deg, rgba(64, 158, 255, .16), rgba(149, 92, 255, .16)); }
+.ai-entry .new { margin-left: 8px; font-size: 10px; line-height: 16px; padding: 0 5px; border-radius: 8px; color: #fff;
+  background: linear-gradient(90deg, #409eff, #955cff); }
 </style>

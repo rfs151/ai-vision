@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, LargeBinary, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from api.db import Base
@@ -52,6 +52,25 @@ class Alarm(Base):
     status: Mapped[str] = mapped_column(String(20), default="new", index=True)   # new|ack|false
 
     device = relationship("Device", back_populates="alarms")
+
+
+class Sighting(Base):
+    """AI 查询: one tracked person / vehicle (worker/sightings.py), its clearest crop and CLIP vector.
+    The same person seen again on the next loop of a looping video is merged into one row (count)."""
+    __tablename__ = "sightings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), index=True)
+    cls: Mapped[str] = mapped_column(String(30), index=True)
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    score: Mapped[float] = mapped_column(Float, default=0)
+    box: Mapped[list] = mapped_column(JSON, default=list)
+    crop: Mapped[str] = mapped_column(String(300))              # paths relative to data dir
+    frame: Mapped[str | None] = mapped_column(String(300))
+    embedding: Mapped[bytes | None] = mapped_column(LargeBinary)  # 512 float16, unit length
+    count: Mapped[int] = mapped_column(Integer, default=1)
+    first_seen: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
+    last_seen: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, index=True)
 
 
 class Setting(Base):

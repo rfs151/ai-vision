@@ -38,6 +38,7 @@ class ApiClient:
         self.on_viewer = None           # callback() when the API says a viewer starts playing
         self._wake = threading.Event()
         self._q = queue.Queue(maxsize=100)
+        self._sq = queue.Queue(maxsize=50)     # sightings: best-effort
         self.stats_fn = None
         self.poll_sec = poll_sec
         self.heartbeat_sec = heartbeat_sec
@@ -117,6 +118,26 @@ class ApiClient:
                 else:
                     clip.give_up()
 
+    # ---- sightings (AI 查询) ----
+    def send_sighting(self, meta, crop_jpg, frame_jpg):
+        """Non-blocking; dropped when the queue is full (a search misses one person, nothing breaks)."""
+        try:
+            self._sq.put_nowait((meta, crop_jpg, frame_jpg))
+        except queue.Full:
+            log.debug("sighting queue full, dropped")
+
+    def _sighting_loop(self):
+        while True:
+            meta, crop, frame = self._sq.get()
+            try:
+                r = self.http.post(f"{self.base}/api/internal/sightings",
+                                   data={"meta": json.dumps({**meta, "stream": self.stream})},
+                                   files={"crop": ("crop.jpg", crop, "image/jpeg"),
+                                          "frame": ("frame.jpg", frame, "image/jpeg")})
+                r.raise_for_status()
+            except Exception as e:
+                log.debug("upload sighting failed: %s", e)
+
     def save_clip(self, job, mp4):
         """ClipRecorder callback (its thread): upload the clip once the alarm ids are known."""
         ids = job.wait_ids(timeout=60)
@@ -191,6 +212,7 @@ class ApiClient:
 
     def start(self, on_rules_changed):
         threading.Thread(target=self._upload_loop, daemon=True, name="alarm-upload").start()
+        threading.Thread(target=self._sighting_loop, daemon=True, name="sighting-upload").start()
         threading.Thread(target=self._status_loop, args=(on_rules_changed,), daemon=True,
                          name="heartbeat").start()
         threading.Thread(target=self._command_loop, daemon=True, name="api-commands").start()

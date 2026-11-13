@@ -4,3 +4,5 @@ ultralytics
 nncf
 # 开发文档 pages (scripts/build_docs.py)
 markdown
+# Chinese-CLIP export for AI 查询 (scripts/export_clip.py)
+transformers

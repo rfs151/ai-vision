@@ -35,6 +35,7 @@ from alarm import AlarmSink
 from apiclient import ApiClient
 from clip import ClipRecorder
 from detector import COCO_NAMES, InferProbe, YoloDetector
+from sightings import Sightings
 from encoder import Encoder
 from motion import MotionGate, motion_fraction
 from rules import RuleEngine
@@ -98,6 +99,7 @@ class AnalysisThread(threading.Thread):
         self.gate = MotionGate()        # skip_static: skip inference while the picture is still
         self.last_dets = None           # detections of the last real inference (reused when skipping)
         self.probe = InferProbe()       # rect_input / int8 + compare: baseline on the same frame now and then
+        self.sightings = None           # Sightings (AI 查询): best crop per track, sent when it ends
         self.int8_factory = None        # () -> INT8 YoloDetector; None: no INT8 model (int8 feature)
         self.int8 = None                # loaded on first use
         self.infer_hist = deque()       # (time, ms) of the last 20 s of inferences, for the average
@@ -168,6 +170,8 @@ class AnalysisThread(threading.Thread):
                 self.tracker.reset()
                 self.gate.reset()
                 self.probe.reset()
+                if self.sightings:
+                    self.sightings.reset()
                 self.last_dets = None
                 if self.engine:
                     self.engine.reset()
@@ -248,6 +252,9 @@ class AnalysisThread(threading.Thread):
         tracks = self.tracker.update(dets, t)
         events = self.engine.update(tracks, t, self.tracker.removed) if self.engine else []
         self.track_views = views(tracks)
+        if self.sightings:
+            self.sightings.update(tracks, {tr.id for tr in self.tracker.tracks}, set(self.tracker.removed), frame,
+                                  frame.bgr if isinstance(frame, SourceFrame) else (lambda: frame), t)
 
         alarms = [e for e in events if e.alarm]
         for e in events:
@@ -473,6 +480,8 @@ def main():
         clips = ClipRecorder(base / "ai-vision-ring" / name, sink.save_clip, args.clip_pre, args.clip_post)
         clips.start()
     an = AnalysisThread(detector, tracker, rules_cfg, sink, args.det_fps, clips, pose=pose)
+    if client and not pose:
+        an.sightings = Sightings(client.send_sighting)
     int8 = Path(args.int8_model) if args.int8_model else (
         Path(model).with_name(Path(model).name.replace("_openvino_model", "_int8_openvino_model")))
     if int8 != Path(model) and int8.exists():
