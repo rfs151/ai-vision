@@ -6,3 +6,5 @@ junit
 timestamper
 localization-zh-cn
 locale
+pipeline-graph-view
+ansicolor

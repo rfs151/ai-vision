@@ -5,6 +5,7 @@ pipeline {
   agent any
   options {
     timestamps()
+    ansiColor('xterm')    // render colored output (vite, pytest) instead of raw escape codes
     timeout(time: 30, unit: 'MINUTES')
     disableConcurrentBuilds()
   }
