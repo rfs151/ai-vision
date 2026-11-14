@@ -16,6 +16,7 @@ services:
       CASC_JENKINS_CONFIG: /var/jenkins_home/casc.yaml
       JENKINS_ADMIN_PASSWORD: ${JENKINS_ADMIN_PASSWORD:?run ci/jenkins/ctl.sh up}
       REPO_URL: ${REPO_URL:-https://github.com/rfs151/ai-vision.git}
+      SCADA_REPO_URL: ${SCADA_REPO_URL:-https://github.com/rfs151/ai-scada.git}
       PIP_INDEX_URL: ${PIP_INDEX:-}
       NPM_CONFIG_REGISTRY: ${NPM_REGISTRY:-}
       DEPLOY_HOST: host.docker.internal

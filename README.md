@@ -1026,6 +1026,7 @@ ci/jenkins/ctl.sh build    # 改了 Dockerfile / plugins.txt 后重建镜像（u
 
 - 触发：每 5 分钟检查一次 GitHub 的 main 分支，有新提交就构建；也可以在页面上点 "Build with Parameters" 手动运行。
 - 配置即代码：管理员账号和 `ai-vision` 任务由 `ci/jenkins/casc.yaml` 生成，没有安装向导。
+- 同一个 Jenkins 还跑 `ai-scada` 任务：流程在 ai-scada 仓库根目录的 `Jenkinsfile`（ruff → 分包 pytest → 前端 test/build，不推镜像不部署），依赖缓存在单独的 venv。执行器只有 1 个，两个任务排队依次构建。
 - 部署权限：`ci/jenkins/ctl.sh enable-deploy` 生成一把 Jenkins 专用的 ssh key，在 `authorized_keys` 里限定它只能执行 `scripts/deploy.sh`（不能开 shell、不能转发）；`disable-deploy` 撤销。
 
 实测（本机）：首次构建约 14 分钟（主要是安装 openvino 等依赖），之后约 30 秒。

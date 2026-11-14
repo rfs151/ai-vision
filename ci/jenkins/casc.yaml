@@ -37,3 +37,21 @@ jobs:
           }
         }
       }
+  - script: >
+      pipelineJob('ai-scada') {
+        description('ai-scada：ruff 检查 → pytest（规约栈 / 仿真子站 / 前置采集 / api）→ 前端测试与构建。流程定义在 ai-scada 仓库根目录的 Jenkinsfile。')
+        logRotator { numToKeep(20) }
+        properties { pipelineTriggers { triggers { pollSCM { scmpoll_spec('H/5 * * * *') } } } }
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote { url('${SCADA_REPO_URL}') }
+                branch('*/main')
+              }
+            }
+            scriptPath('Jenkinsfile')
+            lightweight(true)
+          }
+        }
+      }
