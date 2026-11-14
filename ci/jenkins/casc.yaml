@@ -11,6 +11,10 @@ jenkins:
   authorizationStrategy:
     loggedInUsersCanDoAnything:
       allowAnonymousRead: false
+appearance:
+  locale:                               # interface in Simplified Chinese, whatever the browser asks for
+    systemLocale: "zh_CN"
+    ignoreAcceptLanguage: true
 unclassified:
   location:
     url: "http://127.0.0.1:8070/"

@@ -4,3 +4,5 @@ configuration-as-code
 job-dsl
 junit
 timestamper
+localization-zh-cn
+locale
